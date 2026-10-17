@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cube Breakers</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='6' y='6' width='52' height='52' rx='12' fill='%232f8ff0'/%3E%3Cpath d='M24 8v48M40 8v48M8 24h48M8 40h48' stroke='%23bfe6ff' stroke-width='3'/%3E%3C/svg%3E">
+<meta name="description" content="Break a giant cube with balls that bounce forever.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:ital,wght@0,600;0,700;0,800;0,900;1,900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+    "rapier": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud" class="hidden">
+  <div id="progress"><div id="progress-fill"></div><span id="progress-text">4,096 Blocks to Go</span></div>
+  <div id="crosshair"></div>
+  <div id="banner"></div>
+  <div id="type-label"></div>
+  <div id="bottom">
+    <div id="hotbar"></div>
+    <div id="ballcount"><span class="mini-ball"></span><span id="ballcount-n">0</span><span id="ballcount-cap">/80</span></div>
+  </div>
+  <div id="fps" class="hidden">0 fps</div>
+</div>
+
+<div id="menu" class="hidden">
+  <div class="panel">
+    <div class="title">
+      <span class="logo-cube"></span>
+      <h1>Cube<br>Breakers</h1>
+    </div>
+    <p class="tag">Phase 1 &middot; feel test &middot; all balls free</p>
+    <button id="play" class="primary">Play</button>
+    <div class="settings">
+      <label>Music<input id="set-music" type="range" min="0" max="1" step="0.01"></label>
+      <label>Effects<input id="set-sfx" type="range" min="0" max="1" step="0.01"></label>
+      <label>Mouse<input id="set-sens" type="range" min="0.3" max="3" step="0.05"></label>
+      <label>Grass<select id="set-grass"><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+      <label>Resolution<select id="set-res"><option value="1">Low</option><option value="1.5">Medium</option><option value="2">High</option></select></label>
+      <label class="check">Show FPS<input id="set-fps" type="checkbox"></label>
+    </div>
+    <div class="row">
+      <button id="btn-reset">New cube</button>
+      <button id="btn-clear">Pop my balls</button>
+    </div>
+    <div class="keys">
+      <span><kbd>WASD</kbd> move</span><span><kbd>Space</kbd> jump</span><span><kbd>Shift</kbd> sprint</span>
+      <span><kbd>LMB</kbd> shoot (hold)</span><span><kbd>RMB</kbd> trajectory</span><span><kbd>1</kbd>-<kbd>8</kbd> / wheel ball</span><span><kbd>Esc</kbd> menu</span>
+    </div>
+    <details class="credits">
+      <summary>Credits</summary>
+      <p>Music: "Local Forecast - Elevator" and "Carefree" by Kevin MacLeod (incompetech.com), licensed under Creative Commons: By Attribution 4.0.</p>
+      <p>Sound effects: Kenney.nl (CC0) and freesound.org contributors Breviceps, DuffyBro and others (CC0).</p>
+      <p>Built with three.js and Rapier.</p>
+    </details>
+  </div>
+</div>
+
+<div id="loading">
+  <div class="load-box">
+    <span class="logo-cube big"></span>
+    <h1>Cube Breakers</h1>
+    <div class="load-bar"><div id="load-fill"></div></div>
+    <p id="load-text">Stacking blocks&hellip;</p>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
