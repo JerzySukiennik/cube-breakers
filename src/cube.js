@@ -187,10 +187,18 @@ export class CubeView {
     this.active = new Set();
     this.mesh.count = 0;
     scene.add(this.mesh);
+    this.back = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: '#4a4a4a' }), SIZE);
+    this.back.setColorAt(0, tmpColor.set('#ffffff'));
+    this.back.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.back.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    this.back.frustumCulled = false;
+    this.back.count = 0;
+    this.backStamp = new Uint32Array(SIZE);
+    this.stamp = 0;
+    scene.add(this.back);
   }
 
   writeMatrix(slot, i, s) {
-    const c = this.cube;
     const x = i % N, z = ((i / N) | 0) % N, y = (i / NN) | 0;
     const m = this.mesh.instanceMatrix.array;
     const o = slot * 16;
@@ -198,7 +206,6 @@ export class CubeView {
     m[o + 4] = 0; m[o + 5] = s; m[o + 6] = 0; m[o + 7] = 0;
     m[o + 8] = 0; m[o + 9] = 0; m[o + 10] = s; m[o + 11] = 0;
     m[o + 12] = x - HALF + 0.5; m[o + 13] = y + 0.5; m[o + 14] = z - HALF + 0.5; m[o + 15] = 1;
-    return c;
   }
 
   rebuild(time) {
@@ -228,7 +235,39 @@ export class CubeView {
     this.mesh.instanceColor.needsUpdate = true;
     this.patternAttr.needsUpdate = true;
     this.fxAttr.needsUpdate = true;
+    this.rebuildBacking();
     c.dirty = false;
+  }
+
+  rebuildBacking() {
+    const c = this.cube;
+    const st = this.backStamp;
+    const stamp = ++this.stamp;
+    const bm = this.back.instanceMatrix.array;
+    const bc = this.back.instanceColor.array;
+    let k = 0;
+    for (const i of c.exposed) {
+      const x = i % N, z = ((i / N) | 0) % N, y = (i / NN) | 0;
+      for (let d = 0; d < 6; d++) {
+        const nx = x + (d === 0 ? 1 : d === 1 ? -1 : 0);
+        const ny = y + (d === 2 ? 1 : d === 3 ? -1 : 0);
+        const nz = z + (d === 4 ? 1 : d === 5 ? -1 : 0);
+        if (!c.solidAt(nx, ny, nz)) continue;
+        const j = nx + nz * N + ny * NN;
+        if (st[j] === stamp || this.slotOf[j] >= 0) continue;
+        st[j] = stamp;
+        const o = k * 16;
+        bm[o] = 1; bm[o + 1] = 0; bm[o + 2] = 0; bm[o + 3] = 0;
+        bm[o + 4] = 0; bm[o + 5] = 1; bm[o + 6] = 0; bm[o + 7] = 0;
+        bm[o + 8] = 0; bm[o + 9] = 0; bm[o + 10] = 1; bm[o + 11] = 0;
+        bm[o + 12] = nx - HALF + 0.5; bm[o + 13] = ny + 0.5; bm[o + 14] = nz - HALF + 0.5; bm[o + 15] = 1;
+        bc[k * 3] = c.color[j * 3]; bc[k * 3 + 1] = c.color[j * 3 + 1]; bc[k * 3 + 2] = c.color[j * 3 + 2];
+        k++;
+      }
+    }
+    this.back.count = k;
+    this.back.instanceMatrix.needsUpdate = true;
+    this.back.instanceColor.needsUpdate = true;
   }
 
   hit(i, strength) {
