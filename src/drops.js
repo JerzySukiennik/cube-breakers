@@ -30,6 +30,7 @@ export class Drops {
     this.list = [];
     this.onCollect = null;
     this.time = 0;
+    this.me = 'me';
   }
 
   clear() { this.list.length = 0; }
@@ -59,7 +60,7 @@ export class Drops {
   }
 
   serialize() {
-    return this.list.filter((d) => d.state !== 2).map((d) => [
+    return this.list.filter((d) => d.state !== 2 && d.owner === this.me).map((d) => [
       +d.pos.x.toFixed(2), +d.pos.y.toFixed(2), +d.pos.z.toFixed(2), d.info.value, d.info.key,
       +d.info.r.toFixed(3), +d.info.g.toFixed(3), +d.info.b.toFixed(3), d.info.pattern, d.info.kind,
     ]);
@@ -78,11 +79,13 @@ export class Drops {
 
   update(dt, cube, chunks, chest, magnetR, owner) {
     this.time += dt;
+    this.me = owner;
     const list = this.list;
     let w = 0;
     for (let i = 0; i < list.length; i++) {
       const d = list[i];
       d.age += dt;
+      if (d.owner !== owner && d.age > 25) continue;
       d.pop = Math.min(1, d.pop + dt * 6);
       if (d.state !== 2 && d.owner === owner && d.age > 0.4 && d.pos.distanceToSquared(chest) < magnetR * magnetR) d.state = 2;
       if (d.state === 2) {
@@ -157,7 +160,7 @@ export class Drops {
     const fx = this.fxAttr.array;
     let n = 0;
     for (const d of this.list) {
-      let s = SIZE * (0.4 + 0.6 * d.pop);
+      let s = SIZE * (0.4 + 0.6 * d.pop) * (d.owner === this.me ? 1 : 0.6);
       if (d.state === 1) {
         const bob = Math.sin(this.time * 2.4 + d.yaw * 3) * 0.07;
         d.pos.y += (d.base + bob - d.pos.y) * 0.15;
@@ -169,7 +172,7 @@ export class Drops {
       tm.toArray(m, n * 16);
       col[n * 3] = d.info.r; col[n * 3 + 1] = d.info.g; col[n * 3 + 2] = d.info.b;
       pat[n] = d.info.pattern;
-      fx[n * 3] = d.state === 1 ? 0.16 + 0.1 * Math.sin(this.time * 4 + d.yaw) : 0.1;
+      fx[n * 3] = d.owner !== this.me ? 0 : d.state === 1 ? 0.16 + 0.1 * Math.sin(this.time * 4 + d.yaw) : 0.1;
       fx[n * 3 + 1] = 0;
       n++;
     }

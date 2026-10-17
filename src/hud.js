@@ -28,6 +28,10 @@ export class HUD {
     this.toastEl = $('toast');
     this.fuelEl = $('fuel');
     this.fuelFill = $('fuel-fill');
+    this.onlineEl = $('online');
+    this.onlineN = $('online-n');
+    this.tabEl = $('tab');
+    this.tabKey = '';
     this.slots = [];
     BALL_TYPES.forEach((t, i) => {
       const s = document.createElement('div');
@@ -120,6 +124,25 @@ export class HUD {
   fuel(frac, show) {
     this.fuelEl.classList.toggle('on', show);
     if (show) this.fuelFill.style.transform = `scaleX(${Math.max(0, Math.min(1, frac))})`;
+  }
+
+  online(n, connected, offline) {
+    this.onlineEl.classList.toggle('on', !offline && connected);
+    this.onlineN.textContent = offline ? 'Offline · local save' : connected ? `${n} online` : 'Reconnecting…';
+  }
+
+  tab(show, data) {
+    this.tabEl.classList.toggle('on', show);
+    if (!show || !data) return;
+    const key = JSON.stringify(data);
+    if (key === this.tabKey) return;
+    this.tabKey = key;
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const online = data.online.map((p) => `<div class="row-p ${p.me ? 'me' : ''}"><span class="dot" style="background:${p.color}"></span><span class="nm">${esc(p.nick)}</span><span class="v">${fmt(p.dmg)} dmg</span></div>`).join('');
+    const recs = data.records.length
+      ? data.records.map((r, i) => `<div class="row-p ${r.me ? 'me' : ''}"><span class="rk">${i + 1}.</span><span class="nm">${esc(r.n || 'Player')}</span><span class="v">${fmt(r.b || 0)}</span></div>`).join('')
+      : `<div class="empty">${data.offline ? 'Records need the shared world.' : 'No records yet. Break something!'}</div>`;
+    this.tabEl.innerHTML = `<h2>${esc(data.title)}</h2><div class="cols"><div><h3>Online now · damage this level</h3>${online}</div><div><h3>All-time · blocks broken</h3>${recs}</div></div>`;
   }
 
   showBanner(html, t = 3) {

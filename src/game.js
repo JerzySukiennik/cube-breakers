@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { N, HALF, SIZE, KIND, LAYERS, BALL_TYPES, MINI, TNT_BLAST, BALL_CAP, DOME_R } from './config.js';
 import { shapeFor, levelValueMul } from './shapes.js';
 import { PACKS } from './progress.js';
+import { cellOf } from './chunks.js';
 
 const SPAWN = [0, 0, 30];
 
@@ -55,6 +56,17 @@ export class Game {
     this.lastPick = -1;
     this.onLevel = null;
     this.onEmpty = null;
+    this.net = null;
+    this.dealt = 0;
+    this.remoteCaps = null;
+    this.advanceSent = false;
+    this.chunkT = 0;
+    this.chunks.onCreate = (ch) => {
+      if (this.net && !this.net.isLeader) {
+        const st = this.net.chunks.get(ch.id);
+        if (st) this.chunks.applyState(ch, st);
+      }
+    };
   }
 
   buildColliders() {
@@ -98,6 +110,8 @@ export class Game {
     this.cube.generate(level, seed);
     this.explosions.length = 0;
     this.done = false;
+    this.advanceSent = false;
+    this.dealt = 0;
     if (grow) {
       this.growT = 0;
       this.cube.locked = true;
@@ -195,22 +209,31 @@ export class Game {
   numberStyle(src, frozen) {
     if (frozen) return 'ice';
     if (src && src.cfg && src.cfg.gold) return 'gold';
-    if (src === BLAST || (src && src.cfg && src.cfg.boom)) return 'boom';
+    if (src && src.cfg && (src.cfg.id === 'blast' || src.cfg.boom)) return 'boom';
     return '';
   }
 
   damageCell(i, dmg, p, src, time) {
     const cube = this.cube;
     if (cube.kind[i] === KIND.EMPTY) return;
-    const frozen = cube.frozen[i] > time;
+    const net = this.net;
+    const frozen = net ? net.frozen(i) : cube.frozen[i] > time;
     const d = dmg * (frozen ? 2 : 1);
+    this.fx.number(p, d, this.numberStyle(src, frozen));
+    this.cubeView.hit(i, Math.min(1.5, 0.45 + d / 40));
+    if (src && src.remote) return;
     if (src && src.cfg && src.cfg.freeze) {
       cube.frozen[i] = time + src.cfg.freeze;
       this.cubeView.freeze(i);
+      if (net) net.freeze(i, src.cfg.freeze * 1000);
+    }
+    this.dealt += d;
+    if (net) {
+      net.damage(i, d, src && src.credit, !!(src && src.cfg && src.cfg.gold));
+      if (net.total(i) >= cube.maxHp[i]) net.flushT = 0;
+      return;
     }
     cube.hp[i] -= d;
-    this.fx.number(p, d, this.numberStyle(src, frozen));
-    this.cubeView.hit(i, Math.min(1.5, 0.45 + d / 40));
     if (cube.hp[i] <= 0) this.destroyCell(i, src);
   }
 
@@ -222,12 +245,24 @@ export class Game {
 
   damageChunk(ch, b, dmg, p, src, time) {
     if (!b.alive) return;
-    const frozen = b.frozen > time;
+    const net = this.net;
+    const cell = cellOf(b);
+    const frozen = net ? net.frozen(cell) : b.frozen > time;
     const d = dmg * (frozen ? 2 : 1);
-    if (src && src.cfg && src.cfg.freeze) b.frozen = time + src.cfg.freeze;
-    b.hp -= d;
     this.fx.number(p, d, this.numberStyle(src, frozen));
     this.chunks.hit(ch, b, Math.min(1.5, 0.45 + d / 40));
+    if (src && src.remote) return;
+    if (src && src.cfg && src.cfg.freeze) {
+      b.frozen = time + src.cfg.freeze;
+      if (net) net.freeze(cell, src.cfg.freeze * 1000);
+    }
+    this.dealt += d;
+    if (net) {
+      net.damage(cell, d, src && src.credit, !!(src && src.cfg && src.cfg.gold));
+      if (net.total(cell) >= b.maxHp) net.flushT = 0;
+      return;
+    }
+    b.hp -= d;
     if (b.hp <= 0) {
       const center = this.chunks.worldPos(ch, b, new THREE.Vector3());
       this.chunks.removeBlock(ch, b);
@@ -244,7 +279,8 @@ export class Game {
     this.audio.play('pop', { pos: center, rate: 1.1 + Math.random() * 0.4, vol: 0.5 });
     if (b.kind === KIND.TNT) {
       this.fx.flashGlow(center, '#ffb347', 2.5);
-      this.queueExplosion(center, TNT_BLAST.radius, Math.max(TNT_BLAST.min, LAYERS[b.layer].hp * TNT_BLAST.hpMul), BLAST, 0.14, true);
+      const authority = !this.net || this.net.isLeader;
+      this.queueExplosion(center, TNT_BLAST.radius, Math.max(TNT_BLAST.min, LAYERS[b.layer].hp * TNT_BLAST.hpMul), { cfg: BLAST.cfg, tnt: cellOf(b) }, 0.14, true, !authority);
     } else if (b.kind === KIND.GOLD) {
       this.fx.sparkle(center, '#ffd84a', 26, 6);
       this.fx.flashGlow(center, '#ffe27a', 2.2);
@@ -253,14 +289,107 @@ export class Game {
       this.audio.play('crate', { pos: center });
       this.fx.sparkle(center, '#bfe9ff', 14, 4);
     }
-    const owner = (src && src.owner) || this.owner;
+    const cell = cellOf(b);
     const info = this.dropInfo(b);
+    info.cell = cell;
+    let owner = (src && src.owner) || this.owner;
+    let gold = !!(src && src.cfg && src.cfg.gold);
+    if (this.net) {
+      const u = this.net.kills.get(cell);
+      owner = u ? (u === this.net.uid ? this.owner : u) : null;
+      const h = this.net.hits.get(cell);
+      gold = !!(h && h.gold);
+    }
     let n = 1;
     if (b.kind !== KIND.CRATE) {
-      if (src && src.cfg && src.cfg.gold) n++;
+      if (gold) n++;
       if (Math.random() < this.progress.luck) n++;
     }
     for (let k = 0; k < n; k++) this.drops.spawn(center, info, owner);
+    if (this.net && owner === null) this.net.claim(cell);
+  }
+
+  netDamage(i, total) {
+    const c = this.cube;
+    const maxHp = c.maxHp[i];
+    if (total < maxHp) {
+      if (c.kind[i] !== KIND.EMPTY) c.hp[i] = maxHp - total;
+      return;
+    }
+    if (c.kind[i] !== KIND.EMPTY) { this.destroyCell(i, null); return; }
+    const e = this.chunks.byCell.get(i);
+    if (e && e.b.alive) {
+      const center = this.chunks.worldPos(e.ch, e.b, new THREE.Vector3());
+      this.chunks.removeBlock(e.ch, e.b);
+      this.broken(e.b, center, null);
+    }
+  }
+
+  netKill(i, uid) {
+    const mine = uid === this.net.uid;
+    if (mine) this.net.addKill();
+    for (const d of this.drops.list) {
+      if (d.owner === null && d.info.cell === i) d.owner = mine ? this.owner : uid;
+    }
+  }
+
+  netIce(i, until) {
+    const left = (until - this.net.now()) / 1000;
+    if (left <= 0) return;
+    if (this.cube.kind[i] !== KIND.EMPTY) {
+      this.cube.frozen[i] = this.time + left;
+      this.cubeView.freeze(i);
+      return;
+    }
+    const e = this.chunks.byCell.get(i);
+    if (e) { e.b.frozen = this.time + left; this.chunks.hit(e.ch, e.b, 0); }
+  }
+
+  netChunk(id, st) {
+    if (this.net.isLeader) return;
+    const ch = this.chunks.byId(id);
+    if (ch) this.chunks.applyState(ch, st);
+  }
+
+  netMeta(m) {
+    this.startLevel(m.level, m.seed, true);
+  }
+
+  applyNetWorld() {
+    const net = this.net;
+    const m = net.meta;
+    this.level = m.level;
+    this.seed = m.seed;
+    this.balls.clear();
+    this.chunks.clear();
+    this.cube.generate(m.level, m.seed);
+    const c = this.cube;
+    for (const [i, total] of net.dmg) {
+      if (c.kind[i] === KIND.EMPTY) continue;
+      if (total >= c.maxHp[i]) { c.kind[i] = KIND.EMPTY; c.count--; } else c.hp[i] = c.maxHp[i] - total;
+    }
+    for (const [i, until] of net.ice) {
+      const left = (until - net.now()) / 1000;
+      if (left > 0 && c.kind[i] !== KIND.EMPTY) c.frozen[i] = this.time + left;
+    }
+    c.dirty = true;
+    this.growT = 1;
+    c.locked = false;
+    this.cubeView.setOffset(0);
+    for (const comp of c.findDetached()) {
+      const blocks = comp.map((i) => c.take(i));
+      const ch = this.chunks.fromCube(blocks);
+      const st = net.chunks.get(ch.id);
+      if (st) this.chunks.applyState(ch, st);
+    }
+    c.structureChanged = false;
+    this.buildColliders();
+    this.explosions.length = 0;
+    this.done = false;
+    this.advanceSent = false;
+    this.dealt = 0;
+    this.ensurePlayerOutside();
+    if (this.onLevel) this.onLevel(this.level);
   }
 
   dropInfo(b) {
@@ -290,13 +419,19 @@ export class Game {
     this.audio.play('pickup', { rate: 1 + Math.min(14, this.pickStreak) * 0.05, vol: 0.45, jitter: 0.02 });
   }
 
-  queueExplosion(c, radius, damage, src, delay, big) {
-    this.explosions.push({ t: this.time + delay, c: c.clone(), radius, damage, src, big });
+  queueExplosion(c, radius, damage, src, delay, big, fxOnly) {
+    this.explosions.push({ t: this.time + delay, c: c.clone(), radius, damage, src, big, fxOnly });
   }
 
   explode(e) {
-    const { c, radius, damage, big } = e;
-    const src = e.src && e.src.cfg ? e.src : BLAST;
+    if (!e.fxOnly) this.explodeDamage(e);
+    this.explodeFx(e);
+  }
+
+  explodeDamage(e) {
+    const { c, radius, damage } = e;
+    let src = e.src && e.src.cfg ? e.src : BLAST;
+    if (this.net && src.tnt != null) src = { cfg: src.cfg, credit: this.net.kills.get(src.tnt) || this.net.uid };
     const time = this.time;
     const cube = this.cube;
     const x0 = Math.max(0, Math.floor(c.x - radius + HALF)), x1 = Math.min(N - 1, Math.floor(c.x + radius + HALF));
@@ -315,7 +450,11 @@ export class Game {
     this.chunks.blocksInRadius(c, radius, (ch, b, d, wp) => {
       this.damageChunk(ch, b, damage * (1 - Math.min(1, d / radius) * 0.7), wp.clone(), src, time);
     });
-    this.chunks.impulse(c, radius * 1.8, big ? 7 : 4.5);
+  }
+
+  explodeFx(e) {
+    const { c, radius, big } = e;
+    if (!this.net || this.net.isLeader) this.chunks.impulse(c, radius * 1.8, big ? 7 : 4.5);
 
     tv.copy(this.player.capsule.a).add(this.player.capsule.b).multiplyScalar(0.5).sub(c);
     const pd = tv.length();
@@ -381,7 +520,8 @@ export class Game {
       fw.z += (Math.random() - 0.5) * 1.1;
       fw.normalize();
       if (fw.dot(n) < 0.15) fw.addScaledVector(n, 0.4 - fw.dot(n)).normalize();
-      this.balls.spawn(MINI, b.pos, fw, b.owner, this.time, { dmg: b.dmgMul, speed: this.progress.speedMul });
+      const m = this.balls.spawn(MINI, b.pos, fw, b.owner, this.time, { dmg: b.dmgMul, speed: b.remote ? 1 : this.progress.speedMul });
+      m.remote = !!b.remote;
     }
     this.fx.sparkle(b.pos, '#e3f53a', 12, 5);
     this.fx.flashGlow(b.pos, '#d9ff6a', 1.4);
@@ -391,7 +531,7 @@ export class Game {
 
   boom(b, p) {
     b.alive = false;
-    this.queueExplosion(p, b.cfg.boom.radius, b.cfg.boom.damage * b.dmgMul, b, 0, false);
+    this.queueExplosion(p, b.cfg.boom.radius, b.cfg.boom.damage * b.dmgMul, b, 0, false, !!b.remote);
   }
 
   pop(b) {
@@ -456,7 +596,7 @@ export class Game {
 
   enforceCap(owner) {
     let n = this.balls.countOwned(owner);
-    const cap = Math.min(BALL_CAP, this.progress.cap);
+    const cap = owner === this.owner ? Math.min(BALL_CAP, this.progress.cap) : BALL_CAP;
     while (n > cap) {
       const o = this.balls.oldestOwned(owner);
       if (!o) break;
@@ -511,6 +651,10 @@ export class Game {
     const start = new THREE.Vector3();
     const dir = this.shotStart(camera, launcher, start);
     this.balls.spawn(cfg, start, dir, this.owner, this.time, { dmg: this.progress.damageMul, speed: this.progress.speedMul });
+    if (this.net) {
+      const r = (v, k) => Math.round(v * k) / k;
+      this.net.shot({ t: typeIdx, p: [r(start.x, 1000), r(start.y, 1000), r(start.z, 1000)], d: [r(dir.x, 1e4), r(dir.y, 1e4), r(dir.z, 1e4)], s: r(this.progress.speedMul, 1000), m: r(this.progress.damageMul, 1000) });
+    }
     this.enforceCap(this.owner);
     this.audio.play('shot', { rate: cfg.mega ? 0.7 : cfg.boom ? 0.85 : 1, jitter: 0.08 });
     this.fx.flashGlow(start, cfg.color, 0.5);
@@ -518,8 +662,37 @@ export class Game {
     return true;
   }
 
+  remoteShot(v, age) {
+    const cfg = BALL_TYPES[v.t];
+    if (!cfg || !v.p || !v.d) return;
+    const b = this.balls.spawn(cfg, tv.set(v.p[0], v.p[1], v.p[2]), tw.set(v.d[0], v.d[1], v.d[2]), v.o, this.time, { dmg: v.m || 1, speed: v.s || 1 });
+    b.remote = true;
+    if (age > 0.02) this.balls.advance(b, age, this.time);
+    this.enforceCap(v.o);
+    this.audio.play('shot', { pos: b.pos, vol: 0.6, jitter: 0.1 });
+  }
+
+  broadcastChunks(dt) {
+    this.chunkT -= dt;
+    if (this.chunkT > 0) return;
+    this.chunkT = 0.125;
+    const r = (v, k) => Math.round(v * k) / k;
+    const states = [];
+    const live = new Set();
+    for (const ch of this.chunks.list) {
+      live.add(ch.id);
+      const sleeping = ch.body.isSleeping();
+      if (sleeping && ch.sentSleep) continue;
+      const t = ch.body.translation(), q = ch.body.rotation(), v = ch.body.linvel(), a = ch.body.angvel();
+      states.push({ id: ch.id, t: [r(t.x, 1000), r(t.y, 1000), r(t.z, 1000)], q: [r(q.x, 1e4), r(q.y, 1e4), r(q.z, 1e4), r(q.w, 1e4)], v: [r(v.x, 100), r(v.y, 100), r(v.z, 100)], a: [r(a.x, 100), r(a.y, 100), r(a.z, 100)], s: sleeping });
+      ch.sentSleep = sleeping;
+    }
+    this.net.sendChunks(states, live);
+  }
+
   update(dt) {
     this.breakBudget = 20;
+    if (this.net && this.net.isLeader) this.broadcastChunks(dt);
     if (this.growT < 1) {
       this.growT = Math.min(1, this.growT + dt / 3.2);
       const e = 1 - Math.pow(1 - this.growT, 3);
@@ -560,7 +733,13 @@ export class Game {
         this.fx.sparkle(tv, FIREWORK[Math.floor(Math.random() * FIREWORK.length)], 20, 10);
         this.audio.play('boom', { pos: tv, vol: 0.5, rate: 1.3, range: 120 });
       }
-      if (this.doneT <= 0) this.startLevel(this.level + 1, this.seed + 1, true);
+      if (this.doneT <= 0) {
+        if (!this.net) this.startLevel(this.level + 1, this.seed + 1, true);
+        else if (!this.advanceSent && (this.net.isLeader || this.doneT < -6)) {
+          this.advanceSent = true;
+          this.net.advance(this.net.epoch);
+        }
+      }
     }
   }
 }

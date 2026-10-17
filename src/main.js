@@ -22,6 +22,8 @@ import { Progress, PACKS, UPGRADES } from './progress.js';
 import { Drops } from './drops.js';
 import { Pavilion } from './pavilion.js';
 import { shapeFor } from './shapes.js';
+import { Net } from './net.js';
+import { Avatars, PLAYER_COLORS, EMOTES } from './avatars.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -29,6 +31,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('cb.' + k, JSON.stringify(v)); } catch { } },
 };
 const WORLD_KEY = 'cb.world.v2';
+const ONLINE_KEY = 'cb.online.v1';
 const NO_KEYS = new Set();
 const UP = Object.fromEntries(UPGRADES.map((u) => [u.id, u]));
 const fmt = (n) => Math.round(n).toLocaleString('en-US');
@@ -81,6 +84,35 @@ async function boot() {
   const input = new Input(canvas);
   const game = new Game({ physics, R: RAPIER, cube, cubeView, chunks, balls, player, fx, audio, dome, hud, progress, drops, pavilion });
   game.onLevel = (lvl) => hud.setLevel(lvl, shapeFor(lvl).name);
+  const avatars = new Avatars(scene);
+  const profile = {
+    nick: (store.get('nick', '') || '').slice(0, 16) || 'Player' + Math.floor(100 + Math.random() * 900),
+    color: Math.min(PLAYER_COLORS.length - 1, store.get('color', Math.floor(Math.random() * PLAYER_COLORS.length))),
+  };
+  store.set('nick', profile.nick);
+  store.set('color', profile.color);
+  const nickEl = $('nick');
+  nickEl.value = profile.nick;
+  const colorsEl = $('colors');
+  PLAYER_COLORS.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.style.background = c;
+    b.title = 'Colour ' + (i + 1);
+    b.addEventListener('click', () => { profile.color = i; store.set('color', i); paintColors(); if (net) net.setProfile(profile.nick, profile.color); });
+    colorsEl.appendChild(b);
+  });
+  const paintColors = () => [...colorsEl.children].forEach((b, i) => b.classList.toggle('sel', i === profile.color));
+  paintColors();
+  nickEl.addEventListener('input', () => {
+    const v = nickEl.value.replace(/[^\p{L}\p{N} _.-]/gu, '').slice(0, 16);
+    if (v !== nickEl.value) nickEl.value = v;
+    profile.nick = v.trim() || 'Player';
+    store.set('nick', profile.nick);
+    if (net) net.setProfile(profile.nick, profile.color);
+  });
+  nickEl.addEventListener('keydown', (e) => e.stopPropagation());
+  let net = null;
+  let emote = -1, emoteT = 0;
   stageP = 0.7; showLoad();
 
   let selected = Math.min(BALL_TYPES.length - 1, store.get('type', 0));
@@ -173,7 +205,10 @@ async function boot() {
 
   const saveAll = () => {
     progress.save();
-    try { localStorage.setItem(WORLD_KEY, JSON.stringify(game.serialize())); } catch { }
+    try {
+      if (net) localStorage.setItem(ONLINE_KEY, JSON.stringify({ epoch: net.epoch, drops: drops.serialize() }));
+      else localStorage.setItem(WORLD_KEY, JSON.stringify(game.serialize()));
+    } catch { }
   };
   addEventListener('pagehide', saveAll);
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveAll(); });
@@ -205,6 +240,7 @@ async function boot() {
     $('dbg-gems').addEventListener('click', () => progress.earn(5000));
     $('dbg-ammo').addEventListener('click', () => { progress.ammo = progress.ammo.map((a) => a + 50); progress.changed(); });
     $('dbg-level').addEventListener('click', () => game.startLevel(game.level + 1, game.seed + 1, true));
+    $('dbg-world').addEventListener('click', () => { if (net) net.resetWorld(); });
     $('dbg-reset').addEventListener('click', () => {
       try { localStorage.removeItem(WORLD_KEY); localStorage.removeItem('cb.progress.v2'); } catch { }
       removeEventListener('pagehide', saveAll);
@@ -215,7 +251,14 @@ async function boot() {
   await audioLoad;
   stageP = 1; showLoad();
 
-  let physAcc = 0, simAcc = 0, simTime = 0, fireCd = 0, saveT = 5;
+  let physAcc = 0, simAcc = 0, simTime = 0, fireCd = 0, saveT = 5, syncT = 0;
+  const tabData = () => {
+    const online = [{ nick: profile.nick, color: PLAYER_COLORS[profile.color], dmg: game.dealt, me: true }];
+    if (net) for (const p of net.livePlayers()) online.push({ nick: p.v.n || 'Player', color: PLAYER_COLORS[p.v.c % PLAYER_COLORS.length], dmg: p.v.d || 0 });
+    online.sort((a, b) => b.dmg - a.dmg);
+    const records = net ? net.records.map((r) => ({ n: r.n, b: r.b, me: r.uid === net.uid })) : [];
+    return { title: `Level ${game.level} · ${shapeFor(game.level).name} · ${game.remaining.toLocaleString('en-US')} blocks to go`, online, records, offline: !net };
+  };
   let hover = null;
   const right = new THREE.Vector3();
   const fw = new THREE.Vector3();
@@ -300,9 +343,19 @@ async function boot() {
           if (k >= 0 && k < BALL_TYPES.length) select(k);
         } else if (code === 'Space') player.queueJump();
         else if (code === 'KeyE') use(hover);
-        else if (code === 'Mouse0' && fireCd <= 0) {
-          if (game.shoot(selected, camera, launcher)) fireCd = progress.fireCd;
-          else fireCd = 0.25;
+        else if (code === 'Mouse0') {
+          if (fireCd <= 0) {
+            if (game.shoot(selected, camera, launcher)) fireCd = progress.fireCd;
+            else fireCd = 0.25;
+          }
+        } else {
+          const ei = EMOTES.findIndex((e) => e.key === code);
+          if (ei >= 0) {
+            emote = ei;
+            emoteT = net ? net.now() : Date.now();
+            hud.toast(`${EMOTES[ei].icon} ${EMOTES[ei].text}`);
+            audio.play('select', { rate: 1.3 });
+          }
         }
       }
       if (inp.wheel) select((selected + inp.wheel + BALL_TYPES.length) % BALL_TYPES.length);
@@ -367,6 +420,14 @@ async function boot() {
     hud.progress(game.remaining, cube.total);
     hud.balls(balls.countOwned(game.owner), Math.min(BALL_CAP, progress.cap));
     hud.ammo(progress.ammo);
+    if (net) {
+      net.update(dt, () => ({ x: player.feet.x, y: player.feet.y, z: player.feet.z, yaw: player.yaw, pitch: player.pitch, ball: selected, dmg: game.dealt, emote, emoteT }));
+      avatars.update(dt, camera, net.now());
+      game.remoteCaps = avatars.capsules;
+      syncT -= dt;
+      if (syncT <= 0) { syncT = 1; avatars.sync(net.livePlayers()); hud.online(net.livePlayers().length + 1, net.connected, false); }
+    }
+    hud.tab(playing && input.keys.has('Tab'), tabData());
     hud.update(dt);
 
     saveT -= dt;
@@ -406,13 +467,47 @@ async function boot() {
   balls.flushPending();
   fx.clear();
   drops.clear();
-  let restored = false;
+  const statusEl = $('net-status');
+  $('load-text').textContent = 'Joining the shared world…';
   try {
-    const raw = localStorage.getItem(WORLD_KEY);
-    if (raw) restored = game.restore(JSON.parse(raw));
-  } catch { }
-  if (!restored) game.startLevel(1, 1, false);
-  window.__cb = { game, cube, chunks, balls, player, camera, renderer, launcher, input, audio, progress, drops, pavilion, hud, tick, BALL_TYPES, THREE, select: (k) => select(k), saveAll };
+    const n = new Net();
+    await n.connect(9000);
+    net = n;
+    game.net = net;
+    game.applyNetWorld();
+    try {
+      const raw = JSON.parse(localStorage.getItem(ONLINE_KEY) || 'null');
+      if (raw && raw.epoch === net.epoch && raw.drops) drops.restore(raw.drops);
+    } catch { }
+    net.cb = {
+      damage: (i, v) => game.netDamage(i, v),
+      kill: (i, u) => game.netKill(i, u),
+      ice: (i, v) => game.netIce(i, v),
+      chunk: (id, st) => game.netChunk(id, st),
+      meta: (m) => game.netMeta(m),
+      shot: (v, age) => game.remoteShot(v, age),
+      players: () => {},
+      records: () => {},
+      status: (c) => { statusEl.textContent = c ? 'Connected to the shared world' : 'Reconnecting…'; statusEl.classList.toggle('ok', c); },
+    };
+    net.attach();
+    net.join(profile.nick, profile.color);
+    statusEl.textContent = 'Connected to the shared world';
+    statusEl.classList.add('ok');
+    hud.online(1, true, false);
+  } catch (e) {
+    console.warn('offline mode', e);
+    net = null;
+    statusEl.textContent = 'Offline: playing solo with a local save';
+    hud.online(0, false, true);
+    let restored = false;
+    try {
+      const raw = localStorage.getItem(WORLD_KEY);
+      if (raw) restored = game.restore(JSON.parse(raw));
+    } catch { }
+    if (!restored) game.startLevel(1, 1, false);
+  }
+  window.__cb = { game, cube, chunks, balls, player, camera, renderer, launcher, input, audio, progress, drops, pavilion, hud, avatars, net, profile, tick, BALL_TYPES, THREE, select: (k) => select(k), saveAll };
   tick(1 / 60);
   $('loading').classList.add('hidden');
   menu.classList.remove('hidden');

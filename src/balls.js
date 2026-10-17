@@ -172,7 +172,13 @@ export class Balls {
         }
       }
     }
-    const cap = ctx.player.capsule;
+    this.capsuleHit(b, ctx.player.capsule, true);
+    const rc = ctx.remoteCaps;
+    if (rc) for (let k = 0; k < rc.length; k++) this.capsuleHit(b, rc[k], false);
+  }
+
+  capsuleHit(b, cap, push) {
+    const p = b.pos, r = b.r, d = b.dir;
     tq.subVectors(cap.b, cap.a);
     const segL2 = tq.lengthSq();
     let t = segL2 > 0 ? tv.subVectors(p, cap.a).dot(tq) / segL2 : 0;
@@ -181,14 +187,26 @@ export class Balls {
     tv.subVectors(p, tw);
     const dist = tv.length();
     const minD = r + cap.r;
-    if (dist < minD) {
-      if (dist < 1e-5) tv.set(0, 1, 0); else tv.divideScalar(dist);
-      p.copy(tw).addScaledVector(tv, minD + 0.002);
-      const dn = d.dot(tv);
-      if (dn < 0) {
-        ctx.playerHit(b, d);
-        d.addScaledVector(tv, -2 * dn).normalize();
-        b.homeCd = 0.2;
+    if (dist >= minD) return;
+    if (dist < 1e-5) tv.set(0, 1, 0); else tv.divideScalar(dist);
+    p.copy(tw).addScaledVector(tv, minD + 0.002);
+    const dn = d.dot(tv);
+    if (dn < 0) {
+      if (push) this.ctx.playerHit(b, d);
+      d.addScaledVector(tv, -2 * dn).normalize();
+      b.homeCd = 0.2;
+    }
+  }
+
+  advance(b, secs, time) {
+    const h = 1 / 120;
+    const steps = Math.min(240, Math.floor(secs / h));
+    for (let k = 0; k < steps && b.alive; k++) {
+      const dist = b.speed * h;
+      const n = Math.max(1, Math.ceil(dist / (b.r * 0.55)));
+      for (let j = 0; j < n && b.alive; j++) {
+        b.pos.addScaledVector(b.dir, dist / n);
+        this.collide(b, time);
       }
     }
   }

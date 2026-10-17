@@ -1,7 +1,7 @@
 // Cube Breakers: detached pieces of the cube as Rapier rigid bodies, still made of damageable blocks.
 
 import * as THREE from 'three';
-import { HALF } from './config.js';
+import { HALF, N } from './config.js';
 import { createBlockGeometry, addBlockAttributes } from './blockMaterial.js';
 
 const CAP = 4096;
@@ -12,7 +12,7 @@ const ts = new THREE.Vector3();
 const tm = new THREE.Matrix4();
 const pl = new THREE.Vector3();
 const nl = new THREE.Vector3();
-let nextId = 1;
+export const cellOf = (b) => b.gx + b.gz * N + b.gy * N * N;
 const NB = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 
 export class Chunks {
@@ -33,13 +33,16 @@ export class Chunks {
     this.fxAttr = a.fx;
     this.mesh.count = 0;
     this.active = new Set();
+    this.byCell = new Map();
     this.onLand = null;
+    this.onCreate = null;
     scene.add(this.mesh);
   }
 
   clear() {
     for (const ch of this.list) this.physics.removeRigidBody(ch.body);
     this.list.length = 0;
+    this.byCell.clear();
     this.blockCount = 0;
     this.active.clear();
     this.dirty = true;
@@ -66,7 +69,7 @@ export class Chunks {
     if (lin) body.setLinvel(lin, true);
     if (ang) body.setAngvel(ang, true);
     const ch = {
-      id: nextId++, body, o, map: new Map(), blocks: [], radius: 0, colliders: [], colDirty: false,
+      id: 0, body, o, map: new Map(), blocks: [], radius: 0, colliders: [], colDirty: false, sentSleep: false,
       t: new THREE.Vector3(t.x, t.y, t.z), q: new THREE.Quaternion(q.x, q.y, q.z, q.w), qi: new THREE.Quaternion(),
       prevVy: 0, prevSpeed: 0, landCd: 0.3, sleeping: false,
     };
@@ -77,11 +80,14 @@ export class Chunks {
       ch.map.set(keyOf(b.gx, b.gy, b.gz), b);
       ch.blocks.push(b);
       ch.radius = Math.max(ch.radius, Math.hypot(b.lx, b.ly, b.lz) + 0.87);
+      this.byCell.set(cellOf(b), { ch, b });
     }
+    this.rekey(ch);
     this.buildColliders(ch);
     this.list.push(ch);
     this.blockCount += blocks.length;
     this.dirty = true;
+    if (this.onCreate) this.onCreate(ch);
     return ch;
   }
 
@@ -117,9 +123,36 @@ export class Chunks {
     }
   }
 
+  rekey(ch) {
+    let m = Infinity;
+    for (const b of ch.blocks) { const c = cellOf(b); if (c < m) m = c; }
+    ch.id = String(m);
+  }
+
+  applyState(ch, st) {
+    if (!st || !st.t || !st.q) return;
+    const b = ch.body;
+    b.setTranslation({ x: st.t[0], y: st.t[1], z: st.t[2] }, true);
+    b.setRotation({ x: st.q[0], y: st.q[1], z: st.q[2], w: st.q[3] }, true);
+    if (st.v) b.setLinvel({ x: st.v[0], y: st.v[1], z: st.v[2] }, true);
+    if (st.a) b.setAngvel({ x: st.a[0], y: st.a[1], z: st.a[2] }, true);
+    if (st.s) b.sleep();
+    ch.t.set(st.t[0], st.t[1], st.t[2]);
+    ch.q.set(st.q[0], st.q[1], st.q[2], st.q[3]);
+    ch.qi.copy(ch.q).invert();
+    this.dirty = true;
+  }
+
+  byId(id) {
+    for (const ch of this.list) if (ch.id === id) return ch;
+    return null;
+  }
+
   removeBlock(ch, b) {
     if (!b.alive) return;
     b.alive = false;
+    const e = this.byCell.get(cellOf(b));
+    if (e && e.b === b) this.byCell.delete(cellOf(b));
     ch.map.delete(keyOf(b.gx, b.gy, b.gz));
     const k = ch.blocks.indexOf(b);
     if (k >= 0) ch.blocks.splice(k, 1);
@@ -170,6 +203,7 @@ export class Chunks {
       this.make(comps[c].map((b) => ({ ...b })), ch.o, t, q, lin, ang);
     }
     ch.blocks = comps[0];
+    this.rekey(ch);
     this.buildColliders(ch);
     ch.radius = 0;
     for (const b of ch.blocks) ch.radius = Math.max(ch.radius, Math.hypot(b.lx, b.ly, b.lz) + 0.87);

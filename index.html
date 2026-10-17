@@ -26,6 +26,8 @@
 <div id="hud" class="hidden">
   <div id="progress"><div id="progress-fill"></div><span id="progress-text">4,096 Blocks to Go</span></div>
   <div id="wallet"><i class="gem"></i><span id="wallet-n">0</span></div>
+  <div id="online"><i></i><span id="online-n">Offline</span></div>
+  <div id="tab"></div>
   <div id="crosshair"></div>
   <div id="fuel"><div id="fuel-fill"></div></div>
   <div id="toast"></div>
@@ -47,6 +49,11 @@
       <h1>Cube<br>Breakers</h1>
     </div>
     <p class="tag">Break blocks, grab the loot, recycle it at the Ball Shop for gems.</p>
+    <div class="profile">
+      <label>Your nick<input id="nick" maxlength="16" spellcheck="false" autocomplete="off"></label>
+      <div class="colors" id="colors"></div>
+    </div>
+    <p id="net-status" class="net">Connecting to the shared world&hellip;</p>
     <button id="play" class="primary">Play</button>
     <div class="settings">
       <label>Music<input id="set-music" type="range" min="0" max="1" step="0.01"></label>
@@ -64,10 +71,11 @@
       <button id="dbg-ammo">+50 of each ball</button>
       <button id="dbg-level">Next level</button>
       <button id="dbg-reset">Wipe save</button>
+      <button id="dbg-world">Reset shared world</button>
     </div>
     <div class="keys">
       <span><kbd>WASD</kbd> move</span><span><kbd>Space</kbd> jump</span><span><kbd>Shift</kbd> sprint</span>
-      <span><kbd>LMB</kbd> shoot (hold)</span><span><kbd>RMB</kbd> trajectory</span><span><kbd>1</kbd>-<kbd>8</kbd> / wheel ball</span><span><kbd>E</kbd> buy / use</span><span><kbd>Esc</kbd> menu</span>
+      <span><kbd>LMB</kbd> shoot (hold)</span><span><kbd>RMB</kbd> trajectory</span><span><kbd>1</kbd>-<kbd>8</kbd> / wheel ball</span><span><kbd>E</kbd> buy / use</span><span><kbd>Tab</kbd> players</span><span><kbd>Z</kbd><kbd>X</kbd><kbd>C</kbd><kbd>V</kbd><kbd>B</kbd> emotes</span><span><kbd>Esc</kbd> menu</span>
     </div>
     <details class="credits">
       <summary>Credits</summary>
