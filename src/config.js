@@ -1,6 +1,6 @@
 // Cube Breakers: shared constants and tuning.
 
-export const N = 16;
+export const N = 24;
 export const HALF = N / 2;
 export const SIZE = N * N * N;
 export const DOME_R = 100;

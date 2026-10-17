@@ -139,12 +139,12 @@ function makeTerrain() {
 
 function makeGrassMaterial() {
   const mat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
-  const uniforms = { uTime: { value: 0 }, uPlayer: { value: new THREE.Vector3(0, -99, 0) }, uTile: { value: GRASS_TILE }, uMaxR: { value: GRASS_R } };
+  const uniforms = { uTime: { value: 0 }, uPlayer: { value: new THREE.Vector3(0, -99, 0) }, uTile: { value: GRASS_TILE }, uMaxR: { value: GRASS_R }, uHole: { value: new THREE.Vector4(-12, 51.8, 12, 68.2) } };
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
-        uniform float uTime; uniform vec3 uPlayer; uniform float uTile; uniform float uMaxR;
+        uniform float uTime; uniform vec3 uPlayer; uniform float uTile; uniform float uMaxR; uniform vec4 uHole;
         attribute vec4 aOff; attribute float aTint;
         varying float vH; varying float vTint;`)
       .replace('#include <beginnormal_vertex>', `vec3 objectNormal = vec3(0.0, 1.0, 0.0);
@@ -161,6 +161,7 @@ function makeGrassMaterial() {
         float alive = step(hsh, keep);
         float fade = (1.0 - smoothstep(uTile * 0.5 - 9.0, uTile * 0.5 - 1.0, camD)) * (1.0 - smoothstep(uMaxR - 4.0, uMaxR, length(wp)));
         alive *= step(0.02, fade);
+        alive *= 1.0 - step(uHole.x, wp.x) * step(wp.x, uHole.z) * step(uHole.y, wp.y) * step(wp.y, uHole.w);
         transformed.x *= alive * (1.0 + (1.0 - keep) * 1.5);
         transformed.y *= bh * alive * fade;
         float ca = cos(aOff.w), sa = sin(aOff.w);
@@ -267,11 +268,12 @@ export class World {
     this.hemi = new THREE.HemisphereLight('#cfe9ff', '#4f8a2c', 0.95);
     scene.add(this.hemi);
     const sun = new THREE.DirectionalLight('#fff5e6', 2.45);
-    sun.position.copy(SUN_DIR).multiplyScalar(90);
+    sun.position.copy(SUN_DIR).multiplyScalar(130).add(new THREE.Vector3(0, 0, 26));
+    sun.target.position.set(0, 0, 26);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     const s = sun.shadow.camera;
-    s.left = -36; s.right = 36; s.top = 36; s.bottom = -36; s.near = 10; s.far = 200;
+    s.left = -54; s.right = 54; s.top = 54; s.bottom = -54; s.near = 20; s.far = 260;
     sun.shadow.bias = -0.0005;
     sun.shadow.normalBias = 0.035;
     scene.add(sun);

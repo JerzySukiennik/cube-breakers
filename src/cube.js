@@ -3,9 +3,16 @@
 import * as THREE from 'three';
 import { N, HALF, SIZE, KIND, LAYERS, SPECIAL } from './config.js';
 import { mulberry32 } from './rng.js';
+import { shapeFor, levelHpMul } from './shapes.js';
 import { createBlockGeometry, addBlockAttributes } from './blockMaterial.js';
 
 const NN = N * N;
+
+function upload(attr, start, count) {
+  if (count <= 0) return;
+  attr.addUpdateRange(start, count);
+  attr.needsUpdate = true;
+}
 const tmpColor = new THREE.Color();
 
 export class Cube {
@@ -24,6 +31,10 @@ export class Cube {
     this.exposed = [];
     this.visited = new Uint8Array(SIZE);
     this.queue = new Int32Array(SIZE);
+    this.dist = new Int16Array(SIZE);
+    this.level = 1;
+    this.shape = null;
+    this.locked = false;
   }
 
   idx(x, y, z) { return x + z * N + y * NN; }
@@ -38,13 +49,46 @@ export class Cube {
     return out.set(x - HALF + 0.5, y + 0.5, z - HALF + 0.5);
   }
 
-  generate(seed) {
-    const rnd = mulberry32(seed);
+  generate(level, seed) {
+    this.level = level;
+    const shape = shapeFor(level);
+    const hpMul = levelHpMul(level);
+    const rnd = mulberry32((seed * 7919 + level * 104729) >>> 0);
+    const k = this.kind, dist = this.dist, q = this.queue;
     this.count = 0;
     for (let y = 0; y < N; y++) for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+      k[x + z * N + y * NN] = shape.solid(x, y, z) ? KIND.NORMAL : KIND.EMPTY;
+    }
+    dist.fill(0);
+    let qh = 0, qt = 0;
+    const solid = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < N && y < N && z < N && k[x + z * N + y * NN] !== KIND.EMPTY;
+    for (let i = 0; i < SIZE; i++) {
+      if (k[i] === KIND.EMPTY) continue;
+      const x = i % N, z = ((i / N) | 0) % N, y = (i / NN) | 0;
+      let edge = false;
+      for (let dy = -1; dy <= 1 && !edge; dy++) for (let dz = -1; dz <= 1 && !edge; dz++) for (let dx = -1; dx <= 1; dx++) {
+        if ((dx || dy || dz) && !solid(x + dx, y + dy, z + dz)) { edge = true; break; }
+      }
+      if (edge) { dist[i] = 1; q[qt++] = i; }
+    }
+    let maxD = 1;
+    while (qh < qt) {
+      const i = q[qh++];
+      const x = i % N, z = ((i / N) | 0) % N, y = (i / NN) | 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        if (!(dx || dy || dz) || !solid(x + dx, y + dy, z + dz)) continue;
+        const j = x + dx + (z + dz) * N + (y + dy) * NN;
+        if (dist[j]) continue;
+        dist[j] = dist[i] + 1;
+        if (dist[j] > maxD) maxD = dist[j];
+        q[qt++] = j;
+      }
+    }
+    const top = LAYERS.length - 1;
+    for (let y = 0; y < N; y++) for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
       const i = this.idx(x, y, z);
-      const d = Math.min(x, N - 1 - x, y, N - 1 - y, z, N - 1 - z);
-      const layer = Math.min(d, LAYERS.length - 1);
+      if (k[i] === KIND.EMPTY) continue;
+      const layer = Math.min(top, Math.round(((dist[i] - 1) * top) / Math.max(1, maxD - 1)));
       const L = LAYERS[layer];
       let kind = KIND.NORMAL;
       const r = rnd();
@@ -52,11 +96,16 @@ export class Cube {
       else if (layer >= 2 && layer <= 6 && r < 0.018) kind = KIND.GOLD;
       else if (layer >= 1 && layer <= 5 && r < 0.027) kind = KIND.CRATE;
       const sp = SPECIAL[kind];
-      this.kind[i] = kind;
+      k[i] = kind;
       this.layer[i] = layer;
-      this.maxHp[i] = this.hp[i] = Math.round(L.hp * (sp ? sp.hpMul : 1));
+      this.maxHp[i] = this.hp[i] = Math.round(L.hp * hpMul * (sp ? sp.hpMul : 1));
       this.pattern[i] = sp ? sp.pattern : L.pattern;
-      tmpColor.set(sp ? sp.color : L.colors[Math.floor(rnd() * L.colors.length)]);
+      let hex = sp ? sp.color : (layer === 0 ? shape.shell : L.colors)[Math.floor(rnd() * (layer === 0 ? shape.shell.length : L.colors.length))];
+      if (!sp && layer <= 1 && shape.accent) {
+        const a = shape.accent(x, y, z, rnd);
+        if (a) hex = a;
+      }
+      tmpColor.set(hex);
       if (!sp) tmpColor.offsetHSL((rnd() - 0.5) * 0.015, 0, (rnd() - 0.5) * 0.05);
       this.color[i * 3] = tmpColor.r;
       this.color[i * 3 + 1] = tmpColor.g;
@@ -65,6 +114,7 @@ export class Cube {
       this.count++;
     }
     this.total = this.count;
+    this.shape = shape;
     this.dirty = true;
     this.structureChanged = false;
   }
@@ -91,6 +141,7 @@ export class Cube {
   }
 
   sphereContacts(p, r, out, n0) {
+    if (this.locked) return n0;
     let n = n0;
     const x0 = Math.max(0, Math.floor(p.x - r + HALF)), x1 = Math.min(N - 1, Math.floor(p.x + r + HALF));
     const y0 = Math.max(0, Math.floor(p.y - r)), y1 = Math.min(N - 1, Math.floor(p.y + r));
@@ -231,12 +282,17 @@ export class CubeView {
       fx[slot * 3 + 2] = 0;
     }
     this.mesh.count = n;
-    this.mesh.instanceMatrix.needsUpdate = true;
-    this.mesh.instanceColor.needsUpdate = true;
-    this.patternAttr.needsUpdate = true;
-    this.fxAttr.needsUpdate = true;
+    upload(this.mesh.instanceMatrix, 0, n * 16);
+    upload(this.mesh.instanceColor, 0, n * 3);
+    upload(this.patternAttr, 0, n);
+    upload(this.fxAttr, 0, n * 3);
     this.rebuildBacking();
     c.dirty = false;
+  }
+
+  setOffset(y) {
+    this.mesh.position.y = y;
+    this.back.position.y = y;
   }
 
   rebuildBacking() {
@@ -266,8 +322,8 @@ export class CubeView {
       }
     }
     this.back.count = k;
-    this.back.instanceMatrix.needsUpdate = true;
-    this.back.instanceColor.needsUpdate = true;
+    upload(this.back.instanceMatrix, 0, k * 16);
+    upload(this.back.instanceColor, 0, k * 3);
   }
 
   hit(i, strength) {
@@ -283,7 +339,7 @@ export class CubeView {
     if (c.dirty) this.rebuild(time);
     if (this.active.size === 0) return;
     const fx = this.fxAttr.array;
-    let mtx = false;
+    let lo = Infinity, hi = -1;
     for (const i of this.active) {
       const f = this.flash[i] * Math.exp(-dt * 11);
       this.flash[i] = f < 0.01 ? 0 : f;
@@ -299,9 +355,12 @@ export class CubeView {
       fx[slot * 3] = this.flash[i];
       fx[slot * 3 + 1] = frozen ? Math.min(1, (c.frozen[i] - time) * 2) : 0;
       this.writeMatrix(slot, i, this.wob[i]);
-      mtx = true;
+      if (slot < lo) lo = slot;
+      if (slot > hi) hi = slot;
     }
-    this.fxAttr.needsUpdate = true;
-    if (mtx) this.mesh.instanceMatrix.needsUpdate = true;
+    if (hi >= 0) {
+      upload(this.fxAttr, lo * 3, (hi - lo + 1) * 3);
+      upload(this.mesh.instanceMatrix, lo * 16, (hi - lo + 1) * 16);
+    }
   }
 }

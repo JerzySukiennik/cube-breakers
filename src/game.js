@@ -2,6 +2,24 @@
 
 import * as THREE from 'three';
 import { N, HALF, SIZE, KIND, LAYERS, BALL_TYPES, MINI, TNT_BLAST, BALL_CAP, DOME_R } from './config.js';
+import { shapeFor, levelValueMul } from './shapes.js';
+import { PACKS } from './progress.js';
+
+const SPAWN = [0, 0, 30];
+
+function toB64(buf) {
+  const u = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+function fromB64(str) {
+  const s = atob(str);
+  const u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+  return u.buffer;
+}
 
 const tv = new THREE.Vector3();
 const tw = new THREE.Vector3();
@@ -27,6 +45,16 @@ export class Game {
     this.fireworkT = 0;
     this.breakBudget = 0;
     this.groundCd = 0;
+    this.level = 1;
+    this.growT = 1;
+    this.rumbleT = 0;
+    this.obstacles = this.pavilion ? this.pavilion.boxes : [];
+    this.obstacleMinZ = this.obstacles.reduce((m, o) => Math.min(m, o.min.z), Infinity);
+    this.drops.onCollect = (d) => this.collect(d);
+    this.pickStreak = 0;
+    this.lastPick = -1;
+    this.onLevel = null;
+    this.onEmpty = null;
   }
 
   buildColliders() {
@@ -56,16 +84,92 @@ export class Game {
     return b;
   }
 
-  reset(seed) {
+  clearColliders() {
+    for (let i = 0; i < SIZE; i++) {
+      if (this.colliders[i]) { this.physics.removeCollider(this.colliders[i], false); this.colliders[i] = null; }
+    }
+  }
+
+  startLevel(level, seed, grow) {
+    this.level = level;
     this.seed = seed;
     this.balls.clear();
     this.chunks.clear();
-    this.cube.generate(seed);
-    this.buildColliders();
+    this.cube.generate(level, seed);
     this.explosions.length = 0;
     this.done = false;
+    if (grow) {
+      this.growT = 0;
+      this.cube.locked = true;
+      this.clearColliders();
+      this.cubeView.setOffset(-N - 2);
+    } else {
+      this.growT = 1;
+      this.cube.locked = false;
+      this.cubeView.setOffset(0);
+      this.buildColliders();
+    }
+    this.ensurePlayerOutside();
+    if (this.onLevel) this.onLevel(level);
+  }
+
+  reset(seed) { this.startLevel(this.level, seed, false); }
+
+  ensurePlayerOutside() {
     const p = this.player.feet;
-    if (Math.abs(p.x) < HALF + 0.8 && Math.abs(p.z) < HALF + 0.8 && p.y < N + 1) this.player.teleport(0, 0, 30);
+    for (const h of [0.3, 1.0, 1.7]) {
+      const x = Math.floor(p.x + HALF), y = Math.floor(p.y + h), z = Math.floor(p.z + HALF);
+      if (this.cube.solidAt(x, y, z)) { this.player.teleport(SPAWN[0], SPAWN[1], SPAWN[2]); return; }
+    }
+  }
+
+  serialize() {
+    const c = this.cube;
+    const hp = new Float32Array(SIZE);
+    for (let i = 0; i < SIZE; i++) hp[i] = c.kind[i] === KIND.EMPTY ? -1 : c.hp[i];
+    return {
+      v: 2, level: this.level, seed: this.seed, hp: toB64(hp.buffer),
+      chunks: this.chunks.list.map((ch) => ({
+        o: ch.o, t: [ch.t.x, ch.t.y, ch.t.z], q: [ch.q.x, ch.q.y, ch.q.z, ch.q.w],
+        b: ch.blocks.map((b) => [b.gx, b.gy, b.gz, b.kind, b.layer, Math.round(b.hp), b.maxHp, b.pattern, +b.r.toFixed(4), +b.g.toFixed(4), +b.b.toFixed(4)]),
+      })),
+      drops: this.drops.serialize(),
+    };
+  }
+
+  restore(d) {
+    if (!d || d.v !== 2) return false;
+    try {
+      this.level = d.level;
+      this.seed = d.seed;
+      this.balls.clear();
+      this.chunks.clear();
+      this.drops.clear();
+      this.cube.generate(d.level, d.seed);
+      const hp = new Float32Array(fromB64(d.hp));
+      const c = this.cube;
+      for (let i = 0; i < SIZE; i++) {
+        if (c.kind[i] === KIND.EMPTY) continue;
+        if (hp[i] < 0) { c.kind[i] = KIND.EMPTY; c.count--; } else c.hp[i] = hp[i];
+      }
+      c.dirty = true;
+      this.growT = 1;
+      c.locked = false;
+      this.cubeView.setOffset(0);
+      this.buildColliders();
+      for (const ch of d.chunks || []) {
+        const blocks = ch.b.map((a) => ({ gx: a[0], gy: a[1], gz: a[2], kind: a[3], layer: a[4], hp: a[5], maxHp: a[6], pattern: a[7], r: a[8], g: a[9], b: a[10], frozen: 0 }));
+        if (blocks.length) this.chunks.make(blocks, ch.o, { x: ch.t[0], y: ch.t[1], z: ch.t[2] }, { x: ch.q[0], y: ch.q[1], z: ch.q[2], w: ch.q[3] }, null, null);
+      }
+      this.drops.restore(d.drops || []);
+      this.ensurePlayerOutside();
+      if (this.onLevel) this.onLevel(this.level);
+      return true;
+    } catch (e) {
+      console.warn('restore failed', e);
+      this.startLevel(1, 1, false);
+      return false;
+    }
   }
 
   get remaining() { return this.cube.count + this.chunks.blockCount; }
@@ -148,14 +252,42 @@ export class Game {
     } else if (b.kind === KIND.CRATE) {
       this.audio.play('crate', { pos: center });
       this.fx.sparkle(center, '#bfe9ff', 14, 4);
-      const owner = (src && src.owner) || this.owner;
-      for (let k = 0; k < 4; k++) {
-        const cfg = BALL_TYPES[1 + Math.floor(Math.random() * (BALL_TYPES.length - 1))];
-        fw.set(Math.random() - 0.5, Math.random() * 0.8 + 0.2, Math.random() - 0.5).normalize();
-        this.balls.spawn(cfg, center, fw, owner, this.time);
-      }
-      this.enforceCap(owner);
     }
+    const owner = (src && src.owner) || this.owner;
+    const info = this.dropInfo(b);
+    let n = 1;
+    if (b.kind !== KIND.CRATE) {
+      if (src && src.cfg && src.cfg.gold) n++;
+      if (Math.random() < this.progress.luck) n++;
+    }
+    for (let k = 0; k < n; k++) this.drops.spawn(center, info, owner);
+  }
+
+  dropInfo(b) {
+    let value = LAYERS[b.layer].value * levelValueMul(this.level);
+    let key = 'L' + b.layer;
+    if (b.kind === KIND.TNT) { value *= 2; key = 'tnt'; }
+    else if (b.kind === KIND.GOLD) { value = Math.max(20, value * 10); key = 'gold'; }
+    else if (b.kind === KIND.CRATE) { value = 0; key = 'crate'; }
+    return { value: b.kind === KIND.CRATE ? 0 : Math.max(1, Math.round(value)), key, r: b.r, g: b.g, b: b.b, pattern: b.pattern, kind: b.kind };
+  }
+
+  collect(d) {
+    const info = d.info;
+    if (info.kind === KIND.CRATE) {
+      const t = 1 + Math.floor(Math.random() * (BALL_TYPES.length - 1));
+      const n = Math.max(2, Math.round(PACKS[t].count / 2));
+      this.progress.addAmmo(t, n);
+      this.hud.toast(`+${n} ${BALL_TYPES[t].name}s`, BALL_TYPES[t].color);
+      this.audio.play('powerup');
+      this.fx.sparkle(d.pos, '#bfe9ff', 10, 3);
+      return;
+    }
+    tc.setRGB(info.r, info.g, info.b);
+    this.progress.stash(info.key, info.value, '#' + tc.getHexString(), info.pattern);
+    this.pickStreak = this.time - this.lastPick < 0.5 ? this.pickStreak + 1 : 0;
+    this.lastPick = this.time;
+    this.audio.play('pickup', { rate: 1 + Math.min(14, this.pickStreak) * 0.05, vol: 0.45, jitter: 0.02 });
   }
 
   queueExplosion(c, radius, damage, src, delay, big) {
@@ -249,7 +381,7 @@ export class Game {
       fw.z += (Math.random() - 0.5) * 1.1;
       fw.normalize();
       if (fw.dot(n) < 0.15) fw.addScaledVector(n, 0.4 - fw.dot(n)).normalize();
-      this.balls.spawn(MINI, b.pos, fw, b.owner, this.time);
+      this.balls.spawn(MINI, b.pos, fw, b.owner, this.time, { dmg: b.dmgMul, speed: this.progress.speedMul });
     }
     this.fx.sparkle(b.pos, '#e3f53a', 12, 5);
     this.fx.flashGlow(b.pos, '#d9ff6a', 1.4);
@@ -259,7 +391,7 @@ export class Game {
 
   boom(b, p) {
     b.alive = false;
-    this.queueExplosion(p, b.cfg.boom.radius, b.cfg.boom.damage, b, 0, false);
+    this.queueExplosion(p, b.cfg.boom.radius, b.cfg.boom.damage * b.dmgMul, b, 0, false);
   }
 
   pop(b) {
@@ -275,6 +407,10 @@ export class Game {
     this.fx.sparkle(p, '#' + b.color.getHexString(), 8, 3);
     this.fx.flashGlow(p, '#9fe9ff', 1.6);
     this.audio.play('dome', { pos: p, range: 140, vol: 1.6, rate: 0.9 + Math.random() * 0.3 });
+  }
+
+  obstacleHit(b) {
+    this.audio.play('soft', { pos: b.pos, vol: 0.5, rate: 1.4 });
   }
 
   groundHit(b) {
@@ -320,7 +456,8 @@ export class Game {
 
   enforceCap(owner) {
     let n = this.balls.countOwned(owner);
-    while (n > BALL_CAP) {
+    const cap = Math.min(BALL_CAP, this.progress.cap);
+    while (n > cap) {
       const o = this.balls.oldestOwned(owner);
       if (!o) break;
       this.pop(o);
@@ -365,23 +502,53 @@ export class Game {
   }
 
   shoot(typeIdx, camera, launcher) {
+    if (!this.progress.useAmmo(typeIdx)) {
+      this.audio.play('click');
+      if (this.onEmpty) this.onEmpty(typeIdx);
+      return false;
+    }
     const cfg = BALL_TYPES[typeIdx];
     const start = new THREE.Vector3();
     const dir = this.shotStart(camera, launcher, start);
-    this.balls.spawn(cfg, start, dir, this.owner, this.time);
+    this.balls.spawn(cfg, start, dir, this.owner, this.time, { dmg: this.progress.damageMul, speed: this.progress.speedMul });
     this.enforceCap(this.owner);
     this.audio.play('shot', { rate: cfg.mega ? 0.7 : cfg.boom ? 0.85 : 1, jitter: 0.08 });
     this.fx.flashGlow(start, cfg.color, 0.5);
     launcher.fire();
+    return true;
   }
 
   update(dt) {
     this.breakBudget = 20;
+    if (this.growT < 1) {
+      this.growT = Math.min(1, this.growT + dt / 3.2);
+      const e = 1 - Math.pow(1 - this.growT, 3);
+      this.cubeView.setOffset(-(1 - e) * (N + 2));
+      this.rumbleT -= dt;
+      if (this.rumbleT <= 0) {
+        this.rumbleT = 0.35;
+        this.audio.play('land', { vol: 0.6, rate: 0.5 + Math.random() * 0.1 });
+        this.fx.dustPuff(tv.set((Math.random() - 0.5) * 18, 0.4, (Math.random() - 0.5) * 18), 3, 4, '#f6f1e2', 2.4);
+      }
+      this.fx.addShake(0.05);
+      if (this.growT >= 1) {
+        this.cube.locked = false;
+        this.cubeView.setOffset(0);
+        this.buildColliders();
+        this.ensurePlayerOutside();
+      }
+      return;
+    }
     if (!this.done && this.remaining === 0) {
       this.done = true;
       this.doneT = 7;
-      this.hud.showBanner('<b>CUBE DESTROYED!</b><span>A new one grows in a moment</span>', 6);
-      this.audio.play('bigboom', { vol: 0.7 });
+      const bonus = Math.round(250 * levelValueMul(this.level));
+      this.progress.earn(bonus);
+      this.progress.stats.levels++;
+      const next = shapeFor(this.level + 1);
+      this.hud.showBanner(`<b>LEVEL ${this.level} CLEARED!</b><span>+◇ ${bonus.toLocaleString('en-US')} bonus · Next up: ${next.name}</span>`, 6);
+      this.audio.play('levelup');
+      this.audio.play('bigboom', { vol: 0.6 });
     }
     if (this.done) {
       this.doneT -= dt;
@@ -393,7 +560,7 @@ export class Game {
         this.fx.sparkle(tv, FIREWORK[Math.floor(Math.random() * FIREWORK.length)], 20, 10);
         this.audio.play('boom', { pos: tv, vol: 0.5, rate: 1.3, range: 120 });
       }
-      if (this.doneT <= 0) this.reset(this.seed + 1);
+      if (this.doneT <= 0) this.startLevel(this.level + 1, this.seed + 1, true);
     }
   }
 }

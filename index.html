@@ -25,12 +25,17 @@
 
 <div id="hud" class="hidden">
   <div id="progress"><div id="progress-fill"></div><span id="progress-text">4,096 Blocks to Go</span></div>
+  <div id="wallet"><i class="gem"></i><span id="wallet-n">0</span></div>
   <div id="crosshair"></div>
+  <div id="fuel"><div id="fuel-fill"></div></div>
+  <div id="toast"></div>
+  <div id="tip"></div>
   <div id="banner"></div>
   <div id="type-label"></div>
   <div id="bottom">
     <div id="hotbar"></div>
     <div id="ballcount"><span class="mini-ball"></span><span id="ballcount-n">0</span><span id="ballcount-cap">/80</span></div>
+    <div id="bag"><span id="bag-chips"></span><span id="bag-n">×0</span><span class="bag-v"><i class="gem"></i><span id="bag-v">0</span></span></div>
   </div>
   <div id="fps" class="hidden">0 fps</div>
 </div>
@@ -41,7 +46,7 @@
       <span class="logo-cube"></span>
       <h1>Cube<br>Breakers</h1>
     </div>
-    <p class="tag">Phase 1 &middot; feel test &middot; all balls free</p>
+    <p class="tag">Break blocks, grab the loot, recycle it at the Ball Shop for gems.</p>
     <button id="play" class="primary">Play</button>
     <div class="settings">
       <label>Music<input id="set-music" type="range" min="0" max="1" step="0.01"></label>
@@ -52,12 +57,17 @@
       <label class="check">Show FPS<input id="set-fps" type="checkbox"></label>
     </div>
     <div class="row">
-      <button id="btn-reset">New cube</button>
       <button id="btn-clear">Pop my balls</button>
+    </div>
+    <div class="row debug hidden" id="debug-row">
+      <button id="dbg-gems">+5,000 gems</button>
+      <button id="dbg-ammo">+50 of each ball</button>
+      <button id="dbg-level">Next level</button>
+      <button id="dbg-reset">Wipe save</button>
     </div>
     <div class="keys">
       <span><kbd>WASD</kbd> move</span><span><kbd>Space</kbd> jump</span><span><kbd>Shift</kbd> sprint</span>
-      <span><kbd>LMB</kbd> shoot (hold)</span><span><kbd>RMB</kbd> trajectory</span><span><kbd>1</kbd>-<kbd>8</kbd> / wheel ball</span><span><kbd>Esc</kbd> menu</span>
+      <span><kbd>LMB</kbd> shoot (hold)</span><span><kbd>RMB</kbd> trajectory</span><span><kbd>1</kbd>-<kbd>8</kbd> / wheel ball</span><span><kbd>E</kbd> buy / use</span><span><kbd>Esc</kbd> menu</span>
     </div>
     <details class="credits">
       <summary>Credits</summary>

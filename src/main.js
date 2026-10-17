@@ -1,4 +1,4 @@
-// Cube Breakers: bootstrap, fixed-step simulation loop, rendering, menu and settings.
+// Cube Breakers: bootstrap, fixed-step simulation loop, rendering, shop interaction, saving, menu and settings.
 
 import * as THREE from 'three';
 import RAPIER from 'rapier';
@@ -18,22 +18,29 @@ import { HUD } from './hud.js';
 import { Input } from './input.js';
 import { Aim } from './aim.js';
 import { Game } from './game.js';
+import { Progress, PACKS, UPGRADES } from './progress.js';
+import { Drops } from './drops.js';
+import { Pavilion } from './pavilion.js';
+import { shapeFor } from './shapes.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
   get(k, d) { try { const v = localStorage.getItem('cb.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('cb.' + k, JSON.stringify(v)); } catch { } },
 };
+const WORLD_KEY = 'cb.world.v2';
 const NO_KEYS = new Set();
+const UP = Object.fromEntries(UPGRADES.map((u) => [u.id, u]));
+const fmt = (n) => Math.round(n).toLocaleString('en-US');
 
 async function boot() {
   const bar = $('load-fill');
   let audioP = 0, stageP = 0;
-  const progress = () => { bar.style.transform = `scaleX(${0.15 + 0.45 * audioP + 0.4 * stageP})`; };
+  const showLoad = () => { bar.style.transform = `scaleX(${0.15 + 0.45 * audioP + 0.4 * stageP})`; };
   const audio = new AudioBank();
-  const audioLoad = audio.load((p) => { audioP = p; progress(); });
+  const audioLoad = audio.load((p) => { audioP = p; showLoad(); });
   await RAPIER.init();
-  stageP = 0.4; progress();
+  stageP = 0.3; showLoad();
 
   const canvas = $('game');
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -55,33 +62,67 @@ async function boot() {
   physics.timestep = 1 / PHYS_HZ;
   physics.createCollider(RAPIER.ColliderDesc.cuboid(400, 1, 400).setTranslation(0, -1, 0).setFriction(0.9));
 
+  try { await Promise.race([Promise.all([document.fonts.load('italic 900 92px Nunito'), document.fonts.load('900 40px Nunito'), document.fonts.load('800 30px Nunito')]), new Promise((r) => setTimeout(r, 2500))]); } catch { }
+
+  const progress = new Progress();
   const blockMat = createBlockMaterial();
   const cube = new Cube();
   const cubeView = new CubeView(cube, blockMat, scene);
   const chunks = new Chunks(physics, RAPIER, scene, blockMat);
+  const drops = new Drops(scene, blockMat);
   const balls = new Balls(scene);
   const player = new Player(physics, RAPIER, camera);
-  try { await Promise.race([document.fonts.load("italic 900 92px Nunito"), new Promise((r) => setTimeout(r, 2500))]); } catch { }
   const fx = new FX(scene);
   const dome = new Dome(scene);
   const hud = new HUD();
   const launcher = new Launcher(env);
   const aim = new Aim(scene);
+  const pavilion = new Pavilion(scene, physics, RAPIER);
   const input = new Input(canvas);
-  const game = new Game({ physics, R: RAPIER, cube, cubeView, chunks, balls, player, fx, audio, dome, hud });
-  game.reset(1);
-  stageP = 0.8; progress();
+  const game = new Game({ physics, R: RAPIER, cube, cubeView, chunks, balls, player, fx, audio, dome, hud, progress, drops, pavilion });
+  game.onLevel = (lvl) => hud.setLevel(lvl, shapeFor(lvl).name);
+  stageP = 0.7; showLoad();
 
   let selected = Math.min(BALL_TYPES.length - 1, store.get('type', 0));
   hud.select(selected, false);
   launcher.setType(BALL_TYPES[selected], false);
-  const select = (k) => {
+  const select = (k, quiet) => {
     if (k === selected) return;
     selected = k;
-    hud.select(k, true);
+    hud.select(k, !quiet);
     launcher.setType(BALL_TYPES[k], true);
-    audio.play('select');
+    if (!quiet) audio.play('select');
     store.set('type', k);
+  };
+  const fallbackType = () => {
+    if (progress.ammo[0] > 0) return 0;
+    let best = -1;
+    progress.ammo.forEach((a, i) => { if (a > 0 && (best < 0 || a > progress.ammo[best])) best = i; });
+    return best;
+  };
+  game.onEmpty = (t) => {
+    const f = fallbackType();
+    if (f >= 0 && f !== t) { select(f, true); hud.toast(`Out of ${BALL_TYPES[t].name}s`); }
+    else hud.toast('Out of balls! Free AeroBalls at the Ball Shop', BALL_TYPES[0].color);
+  };
+
+  const applyProgress = () => {
+    player.runMul = progress.runMul;
+    player.maxJumps = progress.jumps;
+    player.jetEnabled = progress.jet;
+    player.maxFuel = progress.fuel;
+    if (player.fuel > player.maxFuel) player.fuel = player.maxFuel;
+    pavilion.refresh(progress);
+    hud.ammo(progress.ammo);
+    hud.wallet(progress.gems);
+    hud.bag(progress.bag, progress.recycleValue());
+  };
+  progress.onChange(applyProgress);
+  applyProgress();
+  player.fuel = player.maxFuel;
+  player.onDoubleJump = () => {
+    audio.play('djump');
+    fx.dustPuff(player.feet, 3, 0.4, '#ffffff', 1.1);
   };
 
   const settings = {
@@ -130,6 +171,13 @@ async function boot() {
   addEventListener('resize', resize);
   resize();
 
+  const saveAll = () => {
+    progress.save();
+    try { localStorage.setItem(WORLD_KEY, JSON.stringify(game.serialize())); } catch { }
+  };
+  addEventListener('pagehide', saveAll);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveAll(); });
+
   let playing = false;
   let started = false;
   const menu = $('menu');
@@ -142,22 +190,108 @@ async function boot() {
   canvas.addEventListener('click', () => { if (started && !playing) input.lock(); });
   input.onLockChange = (locked) => {
     playing = locked;
+    if (locked && !started && progress.stats.blocks === 0) {
+      hud.showBanner('<b>BREAK THE CUBE!</b><span>Loot drops into your backpack. Recycle it at the Ball Shop behind you.</span>', 5);
+    }
     if (locked) { started = true; playBtn.textContent = 'Resume'; }
+    if (!locked) saveAll();
     menu.classList.toggle('hidden', locked);
     hudEl.classList.toggle('dim', !locked);
     hudEl.classList.toggle('hidden', !started);
   };
-  $('btn-reset').addEventListener('click', () => { audio.play('click'); game.reset(game.seed + 1); });
   $('btn-clear').addEventListener('click', () => { audio.play('click'); balls.clear(game.owner); });
+  if (new URLSearchParams(location.search).has('debug')) {
+    $('debug-row').classList.remove('hidden');
+    $('dbg-gems').addEventListener('click', () => progress.earn(5000));
+    $('dbg-ammo').addEventListener('click', () => { progress.ammo = progress.ammo.map((a) => a + 50); progress.changed(); });
+    $('dbg-level').addEventListener('click', () => game.startLevel(game.level + 1, game.seed + 1, true));
+    $('dbg-reset').addEventListener('click', () => {
+      try { localStorage.removeItem(WORLD_KEY); localStorage.removeItem('cb.progress.v2'); } catch { }
+      removeEventListener('pagehide', saveAll);
+      location.reload();
+    });
+  }
 
   await audioLoad;
-  stageP = 1; progress();
+  stageP = 1; showLoad();
 
-  let physAcc = 0, simAcc = 0, simTime = 0, fireCd = 0;
+  let physAcc = 0, simAcc = 0, simTime = 0, fireCd = 0, saveT = 5;
+  let hover = null;
   const right = new THREE.Vector3();
+  const fw = new THREE.Vector3();
+  const chest = new THREE.Vector3();
+
+  const describe = (it) => {
+    if (!it) return null;
+    if (it.kind === 'pack') {
+      const pk = PACKS[it.idx];
+      const t = BALL_TYPES[pk.type];
+      return { title: `${t.name} Pack`, price: pk.price, poor: progress.gems < pk.price, desc: `${t.desc} Contains ${pk.count}.`, note: `You have ${progress.ammo[pk.type]}.`, action: 'Get' };
+    }
+    if (it.kind === 'upgrade') {
+      const u = UP[it.id];
+      const lv = progress.lvl(u.id);
+      if (progress.locked(u.id)) return { title: u.name, desc: u.desc, note: 'Buy the Jetpack first.', poor: true, action: 'Locked' };
+      if (progress.maxed(u.id)) return { title: u.name, desc: u.desc, note: 'Maxed out!', action: 'Done' };
+      const p = progress.price(u.id);
+      return { title: u.max > 1 ? `${u.name} · Lv ${lv + 1}` : u.name, price: p, poor: progress.gems < p, desc: u.desc, note: u.max > 1 ? `Level ${lv} of ${u.max}` : '', action: u.max > 1 ? 'Upgrade' : 'Unlock' };
+    }
+    if (it.kind === 'dispenser') {
+      const full = progress.ammo[0] >= 20;
+      return { title: 'Free AeroBalls', desc: 'Tops your AeroBalls up to 20. Come back whenever you run dry.', note: full ? `You have ${progress.ammo[0]}, that's plenty.` : `You have ${progress.ammo[0]}.`, action: 'Take' };
+    }
+    if (it.kind === 'bin') {
+      const n = progress.bag.count;
+      return { title: 'Recycle', price: n ? progress.recycleValue() : null, desc: n ? `Turn ${fmt(n)} ${n === 1 ? 'block' : 'blocks'} from your backpack into gems.` : 'Your backpack is empty. Break blocks and walk over what drops.', action: 'Recycle' };
+    }
+    return null;
+  };
+
+  const use = (it) => {
+    if (!it) return;
+    if (it.kind === 'pack') {
+      const pk = PACKS[it.idx];
+      const t = BALL_TYPES[pk.type];
+      if (progress.buyPack(it.idx) === 'ok') {
+        audio.play('powerup');
+        hud.toast(`+${pk.count} ${t.name}s`, t.color);
+        fx.sparkle(it.pos, t.color, 16, 3);
+        if (progress.ammo[selected] <= 0 || selected === 0) select(pk.type, true);
+      } else { audio.play('error'); hud.toast('Not enough gems'); }
+    } else if (it.kind === 'upgrade') {
+      const r = progress.buyUpgrade(it.id);
+      if (r === 'ok') {
+        audio.play('levelup');
+        const u = UP[it.id];
+        hud.toast(u.max > 1 ? `${u.name} level ${progress.lvl(it.id)}!` : `${u.name} unlocked!`);
+        fx.sparkle(it.pos, '#ffd34a', 20, 3.5);
+        if (it.id === 'jet' || it.id === 'fuel') player.fuel = player.maxFuel;
+      } else {
+        audio.play('error');
+        hud.toast(r === 'poor' ? 'Not enough gems' : r === 'locked' ? 'Buy the Jetpack first' : 'Already maxed out');
+      }
+    } else if (it.kind === 'dispenser') {
+      const need = 20 - progress.ammo[0];
+      if (need > 0) {
+        progress.addAmmo(0, need);
+        audio.play('take');
+        hud.toast(`+${need} AeroBalls`, BALL_TYPES[0].color);
+        if (progress.ammo[selected] <= 0) select(0, true);
+      } else { audio.play('error'); hud.toast('You already have plenty'); }
+    } else if (it.kind === 'bin') {
+      const v = progress.recycle();
+      if (v > 0) {
+        audio.play('cash');
+        hud.toast(`+◇ ${fmt(v)}`);
+        fx.sparkle(it.pos, '#9fe6ff', 30, 5);
+        fx.flashGlow(it.pos, '#c9f2ff', 2);
+      } else { audio.play('error'); hud.toast('Backpack is empty'); }
+    }
+  };
 
   function tick(dt) {
     const inp = input.consume();
+    fireCd -= dt;
     if (playing) {
       player.look(inp.dx, inp.dy);
       for (const code of inp.pressed) {
@@ -165,12 +299,20 @@ async function boot() {
           const k = parseInt(code.slice(5), 10) - 1;
           if (k >= 0 && k < BALL_TYPES.length) select(k);
         } else if (code === 'Space') player.queueJump();
-        else if (code === 'Mouse0') { game.shoot(selected, camera, launcher); fireCd = 0.18; }
+        else if (code === 'KeyE') use(hover);
+        else if (code === 'Mouse0' && fireCd <= 0) {
+          if (game.shoot(selected, camera, launcher)) fireCd = progress.fireCd;
+          else fireCd = 0.25;
+        }
       }
       if (inp.wheel) select((selected + inp.wheel + BALL_TYPES.length) % BALL_TYPES.length);
-      if (input.left) {
-        fireCd -= dt;
-        if (fireCd <= 0) { game.shoot(selected, camera, launcher); fireCd = 0.18; }
+      if (input.left && fireCd <= 0) {
+        if (game.shoot(selected, camera, launcher)) fireCd = progress.fireCd;
+        else fireCd = 0.4;
+      }
+      if (progress.ammo[selected] <= 0 && !input.left) {
+        const f = fallbackType();
+        if (f >= 0 && f !== selected) select(f, true);
       }
     }
 
@@ -202,6 +344,17 @@ async function boot() {
     right.set(1, 0, 0).applyQuaternion(camera.quaternion);
     audio.setListener(camera.position, right);
 
+    chest.copy(player.renderFeet).y += 1.0;
+    drops.update(dt, cube, chunks, chest, progress.magnet, game.owner);
+    player.forward(fw);
+    hover = playing ? pavilion.pick(camera.position, fw) : null;
+    hud.tooltip(describe(hover));
+    pavilion.update(dt, hover);
+
+    const jet = audio.loop('jet');
+    if (jet) jet.set(player.jetting ? 1 : 0);
+    hud.fuel(player.fuel / player.maxFuel, player.jetEnabled && (player.jetting || player.fuel < player.maxFuel - 0.02));
+
     world.update(dt, simTime, player.renderFeet, camera.position);
     blockUniforms.uTime.value = simTime;
     cubeView.update(dt, simTime);
@@ -212,8 +365,15 @@ async function boot() {
     launcher.update(dt, simTime, inp.dx, inp.dy, player.speedNow, playing && input.right);
     fx.update(dt);
     hud.progress(game.remaining, cube.total);
-    hud.balls(balls.countOwned(game.owner), BALL_CAP);
+    hud.balls(balls.countOwned(game.owner), Math.min(BALL_CAP, progress.cap));
+    hud.ammo(progress.ammo);
     hud.update(dt);
+
+    saveT -= dt;
+    if (saveT <= 0) {
+      saveT = 6;
+      if (started) saveAll();
+    }
 
     renderer.clear();
     renderer.render(scene, camera);
@@ -229,6 +389,7 @@ async function boot() {
     tick(dt);
   }
 
+  game.startLevel(1, 1, false);
   try { renderer.compile(scene, camera); renderer.compile(launcher.scene, launcher.camera); } catch { }
   const warm = new THREE.Vector3(0, 6, 13);
   BALL_TYPES.forEach((t, k) => balls.spawn(t, warm.clone().setX(k - 4), new THREE.Vector3(0, 0, 1), 'warm', 0));
@@ -238,13 +399,20 @@ async function boot() {
   fx.sparkle(warm, '#ffffff', 4);
   fx.flashGlow(warm, '#ffcf6a', 1);
   fx.number(warm, 10, '');
+  drops.spawn(warm, { value: 1, key: 'L0', r: 0.2, g: 0.5, b: 0.9, pattern: 0, kind: 1 }, 'warm');
   dome.hit(new THREE.Vector3(0, 6, -23));
   for (let i = 0; i < 3; i++) tick(1 / 60);
   balls.clear();
   balls.flushPending();
   fx.clear();
-  game.reset(1);
-  window.__cb = { game, cube, chunks, balls, player, camera, renderer, launcher, input, audio, tick, BALL_TYPES, THREE, select: (k) => select(k) };
+  drops.clear();
+  let restored = false;
+  try {
+    const raw = localStorage.getItem(WORLD_KEY);
+    if (raw) restored = game.restore(JSON.parse(raw));
+  } catch { }
+  if (!restored) game.startLevel(1, 1, false);
+  window.__cb = { game, cube, chunks, balls, player, camera, renderer, launcher, input, audio, progress, drops, pavilion, hud, tick, BALL_TYPES, THREE, select: (k) => select(k), saveAll };
   tick(1 / 60);
   $('loading').classList.add('hidden');
   menu.classList.remove('hidden');

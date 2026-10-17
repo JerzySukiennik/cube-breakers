@@ -28,7 +28,17 @@ export class Player {
     this.speedNow = 0;
     this.onStep = null;
     this.onLand = null;
+    this.onDoubleJump = null;
+    this.onJump = null;
     this.sens = 1;
+    this.runMul = 1;
+    this.maxJumps = 1;
+    this.jumpsUsed = 0;
+    this.jetEnabled = false;
+    this.maxFuel = 1.5;
+    this.fuel = 1.5;
+    this.jetting = false;
+    this.airTime = 0;
     const bd = R.RigidBodyDesc.kinematicPositionBased().setTranslation(this.feet.x, this.feet.y + HALF_H + RAD + 0.03, this.feet.z);
     this.body = physics.createRigidBody(bd);
     this.collider = physics.createCollider(R.ColliderDesc.capsule(HALF_H, RAD).setFriction(0), this.body);
@@ -83,7 +93,7 @@ export class Player {
     const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
     let wx = -sy * f + cy * s, wz = -cy * f - sy * s;
     const wl = Math.hypot(wx, wz);
-    const spd = sprint ? 8.2 : 5.2;
+    const spd = (sprint ? 8.2 : 5.2) * this.runMul;
     if (wl > 0) { wx = (wx / wl) * spd; wz = (wz / wl) * spd; }
     const acc = this.grounded ? 14 : 3.5;
     const k = Math.min(1, dt * acc);
@@ -92,10 +102,26 @@ export class Player {
 
     this.jumpBuffer -= dt;
     this.coyote = this.grounded ? 0.1 : this.coyote - dt;
+    if (this.grounded) { this.jumpsUsed = 0; this.airTime = 0; } else this.airTime += dt;
     if (this.jumpBuffer > 0 && this.coyote > 0) {
       this.vy = 7.9;
       this.jumpBuffer = 0;
       this.coyote = 0;
+      this.jumpsUsed = 1;
+      if (this.onJump) this.onJump();
+    } else if (this.jumpBuffer > 0 && !this.grounded && this.coyote <= 0 && this.jumpsUsed < this.maxJumps) {
+      this.vy = Math.max(this.vy, 0) * 0.3 + 7.4;
+      this.jumpBuffer = 0;
+      this.jumpsUsed = Math.max(this.jumpsUsed, 1) + 1;
+      if (this.onDoubleJump) this.onDoubleJump();
+    }
+    const holding = keys.has('Space');
+    this.jetting = this.jetEnabled && holding && !this.grounded && this.fuel > 0 && this.airTime > 0.22;
+    if (this.jetting) {
+      this.fuel = Math.max(0, this.fuel - dt);
+      this.vy = Math.min(this.vy + 46 * dt, 7);
+    } else if (this.grounded) {
+      this.fuel = Math.min(this.maxFuel, this.fuel + dt * (this.maxFuel / 1.3));
     }
     this.vy -= GRAVITY * dt;
     if (this.vy < -40) this.vy = -40;
@@ -122,8 +148,13 @@ export class Player {
 
     const base = this.collider.translation();
     let nx = base.x + mv.x, ny = base.y - HALF_H - RAD + mv.y, nz = base.z + mv.z;
-    const r = Math.hypot(nx, nz);
-    if (r > PLAY_R) { nx *= PLAY_R / r; nz *= PLAY_R / r; this.ext.x *= 0.5; this.ext.z *= 0.5; }
+    const r = Math.hypot(nx, ny + 0.9, nz);
+    if (r > PLAY_R) {
+      const k2 = PLAY_R / r;
+      nx *= k2; nz *= k2;
+      if (ny > 1) { ny = (ny + 0.9) * k2 - 0.9; this.vy = Math.min(this.vy, 0); }
+      this.ext.multiplyScalar(0.5);
+    }
     if (ny < -5) { ny = 2; this.vy = 0; }
     this.feet.set(nx, ny, nz);
     this.body.setNextKinematicTranslation({ x: nx, y: ny + HALF_H + RAD, z: nz });

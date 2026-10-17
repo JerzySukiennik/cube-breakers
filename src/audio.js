@@ -19,6 +19,13 @@ const GROUPS = {
   split: { files: ['split'], vol: 0.35, max: 4, gap: 0.04 },
   powerup: { files: ['powerup'], vol: 0.45, max: 3, gap: 0.05 },
   click: { files: ['click'], vol: 0.5, max: 2, gap: 0.03 },
+  pickup: { files: ['pickup0', 'pickup1', 'pickup2', 'pickup3', 'pickup4'], vol: 0.45, max: 6, gap: 0.035 },
+  error: { files: ['error'], vol: 0.6, max: 2, gap: 0.08 },
+  cash: { files: ['cash'], vol: 0.7, max: 2, gap: 0.1 },
+  djump: { files: ['djump'], vol: 0.45, max: 2, gap: 0.05 },
+  levelup: { files: ['levelup'], vol: 0.6, max: 2, gap: 0.05 },
+  take: { files: ['take'], vol: 0.6, max: 2, gap: 0.05 },
+  jet: { files: ['jet'], vol: 0.5, max: 1, gap: 0 },
 };
 
 const MUSIC = ['assets/music/local-forecast.mp3', 'assets/music/carefree.mp3'];
@@ -103,6 +110,26 @@ export class AudioBank {
     const l = this.listener;
     l.x = pos.x; l.y = pos.y; l.z = pos.z;
     l.rx = right.x; l.ry = right.y; l.rz = right.z;
+  }
+
+  loop(group) {
+    if (!this.ready) return null;
+    this.loops = this.loops || {};
+    if (this.loops[group]) return this.loops[group];
+    const g = GROUPS[group];
+    const buf = this.buffers.get(g.files[0]);
+    if (!buf) return null;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0;
+    src.connect(gain).connect(this.master);
+    src.start();
+    const ctx = this.ctx;
+    const h = { level: 0, set(v) { if (Math.abs(v - this.level) < 0.005) return; this.level = v; gain.gain.setTargetAtTime(v * g.vol, ctx.currentTime, 0.06); } };
+    this.loops[group] = h;
+    return h;
   }
 
   play(group, opts = {}) {

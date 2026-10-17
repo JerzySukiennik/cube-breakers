@@ -34,11 +34,12 @@ export class Balls {
     this.gloss.instanceColor.setUsage(THREE.DynamicDrawUsage);
   }
 
-  spawn(cfg, pos, dir, owner, time) {
+  spawn(cfg, pos, dir, owner, time, mods) {
+    const dmgMul = mods ? mods.dmg : 1;
     const b = {
       id: this.nextId++, cfg, owner, born: time, alive: true,
-      pos: pos.clone(), dir: dir.clone().normalize(),
-      speed: BASE_SPEED * cfg.speed, r: cfg.radius, dmg: cfg.damage, m: cfg.radius ** 3,
+      pos: pos.clone(), dir: dir.clone().normalize(), dmgMul,
+      speed: BASE_SPEED * cfg.speed * (mods ? mods.speed : 1), r: cfg.radius, dmg: cfg.damage * dmgMul, m: cfg.radius ** 3,
       color: new THREE.Color(cfg.color),
       pierce: cfg.pierce || 0, pierceSet: new Set(),
       split: false, target: new THREE.Vector3(), hasTarget: false, homeT: 0, homeCd: 0.25,
@@ -142,6 +143,35 @@ export class Balls {
     if (nc > 0) this.resolveBlocks(b, nc, time);
     else if (b.cfg.pierce && b.pierce < b.cfg.pierce && b.pierceSet.size) this.refill(b);
     if (!b.alive) return;
+    const obs = ctx.obstacles;
+    if (obs && obs.length && p.z > ctx.obstacleMinZ - r) {
+      for (const o of obs) {
+        const cx = Math.min(Math.max(p.x, o.min.x), o.max.x);
+        const cy = Math.min(Math.max(p.y, o.min.y), o.max.y);
+        const cz = Math.min(Math.max(p.z, o.min.z), o.max.z);
+        const dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= r * r) continue;
+        let nx, ny, nz, depth;
+        if (d2 > 1e-10) {
+          const dd = Math.sqrt(d2);
+          nx = dx / dd; ny = dy / dd; nz = dz / dd; depth = r - dd;
+        } else {
+          const ex = [p.x - o.min.x, o.max.x - p.x, p.y - o.min.y, o.max.y - p.y, p.z - o.min.z, o.max.z - p.z];
+          let k = 0;
+          for (let j = 1; j < 6; j++) if (ex[j] < ex[k]) k = j;
+          nx = k === 0 ? -1 : k === 1 ? 1 : 0; ny = k === 2 ? -1 : k === 3 ? 1 : 0; nz = k === 4 ? -1 : k === 5 ? 1 : 0;
+          depth = r + ex[k];
+        }
+        p.x += nx * depth; p.y += ny * depth; p.z += nz * depth;
+        const dn = d.x * nx + d.y * ny + d.z * nz;
+        if (dn < 0) {
+          d.x -= 2 * dn * nx; d.y -= 2 * dn * ny; d.z -= 2 * dn * nz;
+          d.normalize();
+          ctx.obstacleHit(b);
+        }
+      }
+    }
     const cap = ctx.player.capsule;
     tq.subVectors(cap.b, cap.a);
     const segL2 = tq.lengthSq();
