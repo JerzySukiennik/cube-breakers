@@ -1,7 +1,7 @@
 // Cube Breakers: zero-gravity constant-speed balls that bounce forever (blocks, chunks, ground, dome, players, each other).
 
 import * as THREE from 'three';
-import { DOME_R, DOME_BIAS, BASE_SPEED } from './config.js';
+import { DOME_R, BASE_SPEED } from './config.js';
 
 const CAP = 640;
 const C = Array.from({ length: 96 }, () => ({}));
@@ -133,28 +133,14 @@ export class Balls {
     }
     const L = p.length();
     if (L > DOME_R - r) {
-      tv.copy(p).multiplyScalar(-1 / L);
-      p.multiplyScalar((DOME_R - r) / L);
-      const dn = d.dot(tv);
-      if (dn < 0) {
-        d.addScaledVector(tv, -2 * dn);
-        if (ctx.pickTarget(tw)) {
-          tw.sub(p).normalize();
-          d.multiplyScalar(1 - DOME_BIAS).addScaledVector(tw, DOME_BIAS);
-        }
-        d.x += (Math.random() - 0.5) * 0.04;
-        d.y += (Math.random() - 0.5) * 0.04;
-        d.z += (Math.random() - 0.5) * 0.04;
-        d.normalize();
-        if (d.dot(tv) < 0.05) d.addScaledVector(tv, 0.1 - d.dot(tv)).normalize();
-        tw.copy(p).multiplyScalar(DOME_R / (DOME_R - r));
-        ctx.domeHit(b, tw);
-      }
-      this.refill(b);
+      tw.copy(p).multiplyScalar(DOME_R / L);
+      ctx.fieldHit(b, tw);
+      return;
     }
     let nc = ctx.cube.sphereContacts(p, r, C, 0);
     nc = ctx.chunks.sphereContacts(p, r, C, nc);
     if (nc > 0) this.resolveBlocks(b, nc, time);
+    else if (b.cfg.pierce && b.pierce < b.cfg.pierce && b.pierceSet.size) this.refill(b);
     if (!b.alive) return;
     const cap = ctx.player.capsule;
     tq.subVectors(cap.b, cap.a);
@@ -249,7 +235,7 @@ export class Balls {
     const cs = 1.4;
     for (const b of this.list) {
       if (!b.alive) continue;
-      const k = (Math.floor(b.pos.x / cs) + 64) + (Math.floor(b.pos.y / cs) + 64) * 128 + (Math.floor(b.pos.z / cs) + 64) * 16384;
+      const k = (Math.floor(b.pos.x / cs) + 128) + (Math.floor(b.pos.y / cs) + 128) * 256 + (Math.floor(b.pos.z / cs) + 128) * 65536;
       b.hk = k;
       let a = H.get(k);
       if (!a) H.set(k, (a = []));
@@ -258,7 +244,7 @@ export class Balls {
     for (const a of this.list) {
       if (!a.alive) continue;
       for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const cell = H.get(a.hk + dx + dy * 128 + dz * 16384);
+        const cell = H.get(a.hk + dx + dy * 256 + dz * 65536);
         if (!cell) continue;
         for (const o of cell) {
           if (o.id <= a.id || !o.alive) continue;

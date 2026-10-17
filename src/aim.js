@@ -2,7 +2,7 @@
 
 import * as THREE from 'three';
 
-const MAX_DOTS = 260;
+const MAX_DOTS = 560;
 const MAX_MARKS = 4;
 const tm = new THREE.Matrix4();
 const tq = new THREE.Quaternion();
@@ -44,7 +44,7 @@ export class Aim {
     if (active) {
       const start = new THREE.Vector3();
       const dir = game.shotStart(camera, launcher, start);
-      game.balls.trace(cfg, start, dir, 2, 80, this.points, this.bounces);
+      game.balls.trace(cfg, start, dir, 2, 220, this.points, this.bounces);
     }
     this.dots.material.opacity = 0.85 * this.fade;
     this.marks.material.opacity = 0.95 * this.fade;

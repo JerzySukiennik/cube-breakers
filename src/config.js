@@ -3,13 +3,12 @@
 export const N = 16;
 export const HALF = N / 2;
 export const SIZE = N * N * N;
-export const DOME_R = 24;
-export const PLAY_R = 44;
+export const DOME_R = 100;
+export const PLAY_R = DOME_R - 1.5;
 export const BALL_CAP = 80;
 export const SIM_HZ = 120;
 export const PHYS_HZ = 60;
 export const BASE_SPEED = 15;
-export const DOME_BIAS = 0.4;
 export const GRAVITY = 22;
 
 export const KIND = { EMPTY: 0, NORMAL: 1, TNT: 2, GOLD: 3, CRATE: 4 };

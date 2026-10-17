@@ -207,7 +207,7 @@ async function boot() {
     cubeView.update(dt, simTime);
     chunks.update(dt, simTime);
     balls.render();
-    dome.update(dt);
+    dome.update(dt, camera.position, simTime);
     aim.update(dt, playing && input.right, game, camera, launcher, BALL_TYPES[selected], simTime);
     launcher.update(dt, simTime, inp.dx, inp.dy, player.speedNow, playing && input.right);
     fx.update(dt);

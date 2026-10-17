@@ -65,7 +65,7 @@ export class Game {
     this.explosions.length = 0;
     this.done = false;
     const p = this.player.feet;
-    if (Math.abs(p.x) < HALF + 0.8 && Math.abs(p.z) < HALF + 0.8 && p.y < N + 1) this.player.teleport(0, 0, 20);
+    if (Math.abs(p.x) < HALF + 0.8 && Math.abs(p.z) < HALF + 0.8 && p.y < N + 1) this.player.teleport(0, 0, 30);
   }
 
   get remaining() { return this.cube.count + this.chunks.blockCount; }
@@ -269,9 +269,12 @@ export class Game {
     this.audio.play('plop', { pos: b.pos, rate: 1.6 });
   }
 
-  domeHit(b, p) {
-    this.dome.hit(p, b.r / 0.22);
-    this.audio.play('dome', { pos: p, range: 70, rate: 0.9 + Math.random() * 0.3 });
+  fieldHit(b, p) {
+    b.alive = false;
+    this.dome.hit(p, 0.8 + b.r / 0.22 * 0.4);
+    this.fx.sparkle(p, '#' + b.color.getHexString(), 8, 3);
+    this.fx.flashGlow(p, '#9fe9ff', 1.6);
+    this.audio.play('dome', { pos: p, range: 140, vol: 1.6, rate: 0.9 + Math.random() * 0.3 });
   }
 
   groundHit(b) {
@@ -291,17 +294,6 @@ export class Game {
     this.player.push(tv);
     this.audio.play('soft', { pos: b.pos, vol: b.cfg.mega ? 1.4 : 0.9, rate: b.cfg.mega ? 0.7 : 1 });
     this.fx.addShake(b.cfg.mega ? 0.35 : 0.12);
-  }
-
-  pickTarget(out) {
-    const ex = this.cube.exposed;
-    if (ex.length && (this.chunks.list.length === 0 || Math.random() < 0.8)) {
-      for (let t = 0; t < 4; t++) {
-        const i = ex[Math.floor(Math.random() * ex.length)];
-        if (this.cube.kind[i] !== KIND.EMPTY) { this.cube.center(i, out); return true; }
-      }
-    }
-    return this.chunks.randomBlock(out) !== null;
   }
 
   pickNear(pos, out) {
@@ -365,7 +357,7 @@ export class Game {
     const hit = this.physics.castRay(ray, ml + 0.25, true, undefined, undefined, this.player.collider);
     if (hit) out.copy(origin).addScaledVector(fw, 0.15);
     else out.copy(mz);
-    const t = this.raycast(origin, fw, 160);
+    const t = this.raycast(origin, fw, 260);
     tw.copy(origin).addScaledVector(fw, t);
     const dir = new THREE.Vector3().subVectors(tw, out);
     if (t < 1.5 || dir.lengthSq() < 0.01) dir.copy(fw); else dir.normalize();

@@ -2,6 +2,10 @@
 
 import * as THREE from 'three';
 import { mulberry32 } from './rng.js';
+import { DOME_R } from './config.js';
+
+const GRASS_TILE = 72;
+const GRASS_R = DOME_R + 10;
 
 export const SUN_DIR = new THREE.Vector3(-0.42, 0.78, 0.46).normalize();
 
@@ -12,13 +16,13 @@ const smooth = (a, b, x) => {
 
 export function terrainHeight(x, z) {
   const r = Math.hypot(x, z);
-  const t = smooth(50, 115, r);
+  const t = smooth(DOME_R + 16, DOME_R + 100, r);
   if (t <= 0) return 0;
   const a = Math.sin(x * 0.012 + 1.3) * Math.cos(z * 0.0105 - 0.4);
   const b = Math.sin(x * 0.023 - z * 0.017 + 2.1);
   const c = Math.cos(x * 0.041 + z * 0.035);
   const hills = 16 * (a * 0.5 + 0.5) + 9 * (b * 0.5 + 0.5) + 3 * c;
-  return t * Math.max(0, hills) * (0.55 + Math.min(r, 420) / 260);
+  return t * Math.max(0, hills) * (0.7 + Math.min(r - DOME_R, 700) / 240);
 }
 
 function makeSky() {
@@ -106,7 +110,7 @@ function makeClouds() {
 }
 
 function makeTerrain() {
-  const size = 1000, seg = 250;
+  const size = 2600, seg = 340;
   const geo = new THREE.PlaneGeometry(size, size, seg, seg);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
@@ -122,7 +126,7 @@ function makeTerrain() {
     const n = Math.sin(x * 0.11 + z * 0.07) * 0.5 + Math.sin(x * 0.031 - z * 0.05) * 0.5;
     const r = Math.hypot(x, z);
     tmp.copy(c0).lerp(c1, Math.min(1, h / 38) * 0.8 + n * 0.08 + 0.08);
-    if (r < 46) tmp.lerp(c2, 0.35 * (1 - r / 46));
+    if (r < GRASS_R) tmp.lerp(c2, 0.35 * Math.min(1, (GRASS_R - r) / 8));
     col[i * 3] = tmp.r; col[i * 3 + 1] = tmp.g; col[i * 3 + 2] = tmp.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -135,12 +139,12 @@ function makeTerrain() {
 
 function makeGrassMaterial() {
   const mat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
-  const uniforms = { uTime: { value: 0 }, uPlayer: { value: new THREE.Vector3(0, -99, 0) } };
+  const uniforms = { uTime: { value: 0 }, uPlayer: { value: new THREE.Vector3(0, -99, 0) }, uTile: { value: GRASS_TILE }, uMaxR: { value: GRASS_R } };
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
-        uniform float uTime; uniform vec3 uPlayer;
+        uniform float uTime; uniform vec3 uPlayer; uniform float uTile; uniform float uMaxR;
         attribute vec4 aOff; attribute float aTint;
         varying float vH; varying float vTint;`)
       .replace('#include <beginnormal_vertex>', `vec3 objectNormal = vec3(0.0, 1.0, 0.0);
@@ -150,25 +154,28 @@ function makeGrassMaterial() {
       .replace('#include <begin_vertex>', `
         vec3 transformed = position;
         float bh = aOff.z;
-        float camD = distance(aOff.xy, cameraPosition.xz);
+        vec2 wp = aOff.xy + uTile * floor((cameraPosition.xz - aOff.xy) / uTile + 0.5);
+        float camD = distance(wp, cameraPosition.xz);
         float keep = clamp(1.3 - camD / 18.0, 0.2, 1.0);
         float hsh = fract(sin(dot(aOff.xy, vec2(12.9898, 78.233))) * 43758.5453);
         float alive = step(hsh, keep);
+        float fade = (1.0 - smoothstep(uTile * 0.5 - 9.0, uTile * 0.5 - 1.0, camD)) * (1.0 - smoothstep(uMaxR - 4.0, uMaxR, length(wp)));
+        alive *= step(0.02, fade);
         transformed.x *= alive * (1.0 + (1.0 - keep) * 1.5);
-        transformed.y *= bh * alive;
+        transformed.y *= bh * alive * fade;
         float ca = cos(aOff.w), sa = sin(aOff.w);
         transformed.xz = vec2(ca * transformed.x - sa * transformed.z, sa * transformed.x + ca * transformed.z);
         float k = position.y * position.y;
-        float w = sin(uTime * 1.5 + aOff.x * 0.19 + aOff.y * 0.13) * 0.55 + sin(uTime * 2.9 + aOff.x * 0.6 - aOff.y * 0.4) * 0.18;
+        float w = sin(uTime * 1.5 + wp.x * 0.19 + wp.y * 0.13) * 0.55 + sin(uTime * 2.9 + wp.x * 0.6 - wp.y * 0.4) * 0.18;
         vec2 wind = vec2(0.75, 0.38) * (w + 0.55) * 0.22 * bh;
-        vec2 dd = aOff.xy - uPlayer.xz;
+        vec2 dd = wp - uPlayer.xz;
         float dl = length(dd);
         float near = (1.0 - smoothstep(0.0, 1.25, dl)) * (1.0 - smoothstep(0.6, 2.0, abs(uPlayer.y)));
         vec2 push = normalize(dd + vec2(1e-4)) * near * 0.7;
-        transformed.xz += (wind + push) * k;
-        transformed.y -= near * k * 0.3 * bh;
-        transformed.x += aOff.x;
-        transformed.z += aOff.y;
+        transformed.xz += (wind + push) * k * alive;
+        transformed.y -= near * k * 0.3 * bh * alive;
+        transformed.x += wp.x;
+        transformed.z += wp.y;
         vH = position.y;
         vTint = aTint;`);
     sh.fragmentShader = sh.fragmentShader
@@ -183,7 +190,7 @@ function makeGrassMaterial() {
   return mat;
 }
 
-function makeGrass(count, radius, mat) {
+function makeGrass(count, tile, mat) {
   const verts = new Float32Array([
     -0.045, 0, 0, 0.045, 0, 0,
     -0.034, 0.34, 0, 0.034, 0.34, 0,
@@ -199,18 +206,16 @@ function makeGrass(count, radius, mat) {
   const tint = new Float32Array(count);
   const rnd = mulberry32(1234);
   for (let i = 0; i < count; i++) {
-    const r = radius * Math.sqrt(rnd());
-    const a = rnd() * Math.PI * 2;
-    off[i * 4] = Math.cos(a) * r;
-    off[i * 4 + 1] = Math.sin(a) * r;
-    off[i * 4 + 2] = 0.32 + rnd() * 0.42 + (r > radius * 0.85 ? -0.12 : 0);
+    off[i * 4] = (rnd() - 0.5) * tile;
+    off[i * 4 + 1] = (rnd() - 0.5) * tile;
+    off[i * 4 + 2] = 0.32 + rnd() * 0.42;
     off[i * 4 + 3] = rnd() * Math.PI * 2;
     tint[i] = rnd();
   }
   geo.setAttribute('aOff', new THREE.InstancedBufferAttribute(off, 4));
   geo.setAttribute('aTint', new THREE.InstancedBufferAttribute(tint, 1));
   geo.instanceCount = count;
-  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), radius + 2);
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   mesh.frustumCulled = false;
@@ -251,7 +256,7 @@ function makeTurbine(mat) {
 export class World {
   constructor(scene) {
     this.scene = scene;
-    scene.fog = new THREE.Fog('#b4ddff', 140, 820);
+    scene.fog = new THREE.Fog('#b4ddff', 260, 1250);
     this.sky = makeSky();
     scene.add(this.sky);
     this.clouds = makeClouds();
@@ -279,7 +284,7 @@ export class World {
 
     const white = new THREE.MeshStandardMaterial({ color: '#f4f8fb', roughness: 0.55 });
     this.turbines = [];
-    const spots = [[-0.55, 210], [-0.25, 265], [0.12, 300], [0.42, 240], [0.75, 280], [1.2, 230], [2.3, 260], [2.75, 220], [3.6, 250], [4.4, 290]];
+    const spots = [[-0.55, 330], [-0.25, 410], [0.12, 450], [0.42, 360], [0.75, 430], [1.2, 350], [2.3, 400], [2.75, 340], [3.6, 380], [4.4, 440], [5.1, 360], [1.75, 470]];
     const rnd = mulberry32(9);
     for (const [ang, r] of spots) {
       const t = makeTurbine(white);
@@ -294,18 +299,18 @@ export class World {
 
     const canopyGeo = new THREE.IcosahedronGeometry(1, 2);
     const trunkGeo = new THREE.CylinderGeometry(0.12, 0.18, 1, 6);
-    const canopy = new THREE.InstancedMesh(canopyGeo, new THREE.MeshLambertMaterial({ color: '#3d9a2c' }), 40);
-    const trunk = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: '#7a5a3a' }), 40);
+    const canopy = new THREE.InstancedMesh(canopyGeo, new THREE.MeshLambertMaterial({ color: '#3d9a2c' }), 70);
+    const trunk = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: '#7a5a3a' }), 70);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const v = new THREE.Vector3();
     const sc = new THREE.Vector3();
     const tc = new THREE.Color();
-    for (let i = 0; i < 40; i++) {
-      const ang = rnd() * Math.PI * 2, r = 70 + rnd() * 160;
+    for (let i = 0; i < 70; i++) {
+      const ang = rnd() * Math.PI * 2, r = DOME_R + 30 + rnd() * 260;
       const x = Math.cos(ang) * r, z = Math.sin(ang) * r;
       const y = terrainHeight(x, z);
-      const k = 2.2 + rnd() * 2.6;
+      const k = 2.6 + rnd() * 3.2;
       m.compose(v.set(x, y + k * 0.6, z), q, sc.set(0.9 * k, k * 1.2, 0.9 * k));
       trunk.setMatrixAt(i, m);
       m.compose(v.set(x, y + k * 1.75, z), q, sc.set(k, k * 0.95, k));
@@ -316,7 +321,7 @@ export class World {
   }
 
   setGrass(level) {
-    const counts = { off: 0, low: 40000, medium: 80000, high: 150000 };
+    const counts = { off: 0, low: 45000, medium: 85000, high: 150000 };
     if (this.grass) {
       this.scene.remove(this.grass);
       this.grass.geometry.dispose();
@@ -324,7 +329,7 @@ export class World {
     }
     const c = counts[level] ?? counts.medium;
     if (c > 0) {
-      this.grass = makeGrass(c, 43, this.grassMat);
+      this.grass = makeGrass(c, GRASS_TILE, this.grassMat);
       this.scene.add(this.grass);
     }
   }

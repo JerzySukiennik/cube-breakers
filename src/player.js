@@ -11,7 +11,7 @@ export class Player {
   constructor(physics, R, camera) {
     this.physics = physics;
     this.camera = camera;
-    this.feet = new THREE.Vector3(0, 0, 20);
+    this.feet = new THREE.Vector3(0, 0, 30);
     this.prevFeet = this.feet.clone();
     this.renderFeet = this.feet.clone();
     this.yaw = 0;
