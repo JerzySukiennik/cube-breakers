@@ -206,8 +206,7 @@ async function boot() {
     if (DEMO) return;
     progress.save();
     try {
-      if (net) localStorage.setItem(ONLINE_KEY, JSON.stringify({ epoch: net.epoch, drops: drops.serialize() }));
-      else localStorage.setItem(WORLD_KEY, JSON.stringify(game.serialize()));
+      if (!net) localStorage.setItem(WORLD_KEY, JSON.stringify(game.serialize()));
     } catch { }
   };
   addEventListener('pagehide', saveAll);
@@ -238,7 +237,7 @@ async function boot() {
   if (new URLSearchParams(location.search).has('debug')) {
     $('debug-row').classList.remove('hidden');
     $('dbg-gems').addEventListener('click', () => progress.earn(5000));
-    $('dbg-ammo').addEventListener('click', () => { progress.ammo = progress.ammo.map((a) => a + 50); progress.changed(); });
+    $('dbg-ammo').addEventListener('click', () => progress.debugAmmo(50));
     $('dbg-level').addEventListener('click', () => game.startLevel(game.level + 1, game.seed + 1, true));
     $('dbg-world').addEventListener('click', () => { if (net) net.resetWorld(); });
     $('dbg-reset').addEventListener('click', () => {
@@ -253,23 +252,24 @@ async function boot() {
 
   let physAcc = 0, simAcc = 0, simTime = 0, fireCd = 0, saveT = 5, syncT = 0, menuT = 0, orbit = 0.6;
   const tabData = () => {
-    const online = [{ nick: profile.nick, color: PLAYER_COLORS[profile.color], dmg: game.dealt, me: true }];
-    if (net) for (const p of net.livePlayers()) online.push({ nick: p.v.n || 'Player', color: PLAYER_COLORS[p.v.c % PLAYER_COLORS.length], dmg: p.v.d || 0 });
-    online.sort((a, b) => b.dmg - a.dmg);
-    const records = net ? net.records.map((r) => ({ n: r.n, b: r.b, me: r.uid === net.uid })) : [];
-    return { title: `Level ${game.level} · ${shapeFor(game.level).name} · ${game.remaining.toLocaleString('en-US')} blocks to go`, online, records, offline: !net };
+    const online = [{ nick: profile.nick, color: PLAYER_COLORS[profile.color], me: true }];
+    if (net) for (const p of net.livePlayers()) online.push({ nick: p.v.n || 'Player', color: PLAYER_COLORS[p.v.c % PLAYER_COLORS.length] });
+    const st = progress.stats;
+    return { title: `Level ${game.level} · ${shapeFor(game.level).name} · ${game.remaining.toLocaleString('en-US')} blocks to go`, online, team: { blocks: st.blocks || 0, levels: st.levels || 0, gems: st.gems || 0, wallet: progress.gems }, offline: !net };
   };
+
   let hover = null;
   const right = new THREE.Vector3();
   const fw = new THREE.Vector3();
   const chest = new THREE.Vector3();
 
+  const owns = () => (net ? 'The team has' : 'You have');
   const describe = (it) => {
     if (!it) return null;
     if (it.kind === 'pack') {
       const pk = PACKS[it.idx];
       const t = BALL_TYPES[pk.type];
-      return { title: `${t.name} Pack`, price: pk.price, poor: progress.gems < pk.price, desc: `${t.desc} Contains ${pk.count}.`, note: `You have ${progress.ammo[pk.type]}.`, action: 'Get' };
+      return { title: `${t.name} Pack`, price: pk.price, poor: progress.gems < pk.price, desc: `${t.desc} Contains ${pk.count}.`, note: `${owns()} ${progress.ammo[pk.type]}.`, action: 'Get' };
     }
     if (it.kind === 'upgrade') {
       const u = UP[it.id];
@@ -281,55 +281,58 @@ async function boot() {
     }
     if (it.kind === 'dispenser') {
       const full = progress.ammo[0] >= 20;
-      return { title: 'Free AeroBalls', desc: 'Tops your AeroBalls up to 20. Come back whenever you run dry.', note: full ? `You have ${progress.ammo[0]}, that's plenty.` : `You have ${progress.ammo[0]}.`, action: 'Take' };
+      return { title: 'Free AeroBalls', desc: 'Tops the AeroBalls up to 20. Come back whenever you run dry.', note: full ? `${owns()} ${progress.ammo[0]}, that's plenty.` : `${owns()} ${progress.ammo[0]}.`, action: 'Take' };
     }
     if (it.kind === 'bin') {
       const n = progress.bag.count;
-      return { title: 'Recycle', price: n ? progress.recycleValue() : null, desc: n ? `Turn ${fmt(n)} ${n === 1 ? 'block' : 'blocks'} from your backpack into gems.` : 'Your backpack is empty. Break blocks and walk over what drops.', action: 'Recycle' };
+      return { title: 'Recycle', price: n ? progress.recycleValue() : null, desc: n ? `Turn ${fmt(n)} ${n === 1 ? 'block' : 'blocks'} from your backpack into gems${net ? ' for the whole team' : ''}.` : 'Your backpack is empty. Break blocks and walk over what drops.', action: 'Recycle' };
     }
     return null;
   };
 
-  const use = (it) => {
-    if (!it) return;
-    if (it.kind === 'pack') {
-      const pk = PACKS[it.idx];
-      const t = BALL_TYPES[pk.type];
-      if (progress.buyPack(it.idx) === 'ok') {
-        audio.play('powerup');
-        hud.toast(`+${pk.count} ${t.name}s`, t.color);
-        fx.sparkle(it.pos, t.color, 16, 3);
-        if (progress.ammo[selected] <= 0 || selected === 0) select(pk.type, true);
-      } else { audio.play('error'); hud.toast('Not enough gems'); }
-    } else if (it.kind === 'upgrade') {
-      const r = progress.buyUpgrade(it.id);
-      if (r === 'ok') {
-        audio.play('levelup');
-        const u = UP[it.id];
-        hud.toast(u.max > 1 ? `${u.name} level ${progress.lvl(it.id)}!` : `${u.name} unlocked!`);
-        fx.sparkle(it.pos, '#ffd34a', 20, 3.5);
-        if (it.id === 'jet' || it.id === 'fuel') player.fuel = player.maxFuel;
-      } else {
-        audio.play('error');
-        hud.toast(r === 'poor' ? 'Not enough gems' : r === 'locked' ? 'Buy the Jetpack first' : 'Already maxed out');
+  let busy = false;
+  const use = async (it) => {
+    if (!it || busy) return;
+    busy = true;
+    try {
+      if (it.kind === 'pack') {
+        const pk = PACKS[it.idx];
+        const t = BALL_TYPES[pk.type];
+        if ((await progress.buyPack(it.idx)) === 'ok') {
+          audio.play('powerup');
+          hud.toast(`+${pk.count} ${t.name}s`, t.color);
+          fx.sparkle(it.pos, t.color, 16, 3);
+          if (progress.ammo[selected] <= 0 || selected === 0) select(pk.type, true);
+        } else { audio.play('error'); hud.toast('Not enough gems'); }
+      } else if (it.kind === 'upgrade') {
+        const r = await progress.buyUpgrade(it.id);
+        if (r === 'ok') {
+          audio.play('levelup');
+          const u = UP[it.id];
+          hud.toast(u.max > 1 ? `${u.name} level ${progress.lvl(it.id)}!` : `${u.name} unlocked!`);
+          fx.sparkle(it.pos, '#ffd34a', 20, 3.5);
+          if (it.id === 'jet' || it.id === 'fuel') player.fuel = player.maxFuel;
+        } else {
+          audio.play('error');
+          hud.toast(r === 'poor' ? 'Not enough gems' : r === 'locked' ? 'Buy the Jetpack first' : 'Already maxed out');
+        }
+      } else if (it.kind === 'dispenser') {
+        const add = await progress.topUpAero(20);
+        if (add > 0) {
+          audio.play('take');
+          hud.toast(`+${add} AeroBalls`, BALL_TYPES[0].color);
+          if (progress.ammo[selected] <= 0) select(0, true);
+        } else { audio.play('error'); hud.toast(net ? 'The team already has plenty' : 'You already have plenty'); }
+      } else if (it.kind === 'bin') {
+        const v = progress.recycle();
+        if (v > 0) {
+          audio.play('cash');
+          hud.toast(net ? `+◇ ${fmt(v)} for the team` : `+◇ ${fmt(v)}`);
+          fx.sparkle(it.pos, '#9fe6ff', 30, 5);
+          fx.flashGlow(it.pos, '#c9f2ff', 2);
+        } else { audio.play('error'); hud.toast('Backpack is empty'); }
       }
-    } else if (it.kind === 'dispenser') {
-      const need = 20 - progress.ammo[0];
-      if (need > 0) {
-        progress.addAmmo(0, need);
-        audio.play('take');
-        hud.toast(`+${need} AeroBalls`, BALL_TYPES[0].color);
-        if (progress.ammo[selected] <= 0) select(0, true);
-      } else { audio.play('error'); hud.toast('You already have plenty'); }
-    } else if (it.kind === 'bin') {
-      const v = progress.recycle();
-      if (v > 0) {
-        audio.play('cash');
-        hud.toast(`+◇ ${fmt(v)}`);
-        fx.sparkle(it.pos, '#9fe6ff', 30, 5);
-        fx.flashGlow(it.pos, '#c9f2ff', 2);
-      } else { audio.play('error'); hud.toast('Backpack is empty'); }
-    }
+    } finally { busy = false; }
   };
 
   function tick(dt) {
@@ -457,8 +460,8 @@ async function boot() {
       if (menuT <= 0) {
         menuT = 0.5;
         const td = tabData();
-        menuUI.world({ level: game.level, shape: shapeFor(game.level).name, remaining: game.remaining, total: cube.total, online: td.online, top: td.records, offline: !net });
-        menuUI.stats({ gems: progress.gems, blocks: progress.stats.blocks, levels: progress.stats.levels });
+        menuUI.world({ level: game.level, shape: shapeFor(game.level).name, remaining: game.remaining, total: cube.total, online: td.online, team: td.team, offline: !net });
+        menuUI.stats({ gems: progress.gems, blocks: progress.stats.blocks || 0, levels: progress.stats.levels || 0 });
       }
     }
   }
@@ -496,9 +499,29 @@ async function boot() {
     net = n;
     game.net = net;
     game.applyNetWorld();
+    progress.attachTeam(net);
+    drops.claim = (id) => net.claimLoot(id);
+    hud.teamMode(true);
     try {
-      const raw = JSON.parse(localStorage.getItem(ONLINE_KEY) || 'null');
-      if (raw && raw.epoch === net.epoch && raw.drops) drops.restore(raw.drops);
+      if (!DEMO && !localStorage.getItem('cb.teamMigrated')) {
+        const L = progress.local;
+        const extra = L.ammo.map((a, i) => (i === 0 ? Math.max(0, a - 20) : a));
+        const hasUp = Object.values(L.up).some((v) => v > 0);
+        if (L.gems > 0 || hasUp || extra.some((a) => a > 0) || L.stats.blocks > 0) {
+          net.teamTx((t) => {
+            t.gems += L.gems;
+            for (const [id, v] of Object.entries(L.up)) t.up[id] = Math.max(t.up[id] || 0, v);
+            extra.forEach((a, i) => { if (a > 0) t.ammo[i] = (t.ammo[i] || 0) + a; });
+            t.stats.blocks += L.stats.blocks || 0;
+            t.lastWhat = 'their solo stash into the pool';
+            return t;
+          }).then((ok) => {
+            if (!ok) return;
+            localStorage.setItem('cb.teamMigrated', '1');
+            hud.toast('Your solo stash joined the team pool');
+          });
+        } else localStorage.setItem('cb.teamMigrated', '1');
+      }
     } catch { }
     net.cb = {
       damage: (i, v) => game.netDamage(i, v),
@@ -507,8 +530,16 @@ async function boot() {
       chunk: (id, st) => game.netChunk(id, st),
       meta: (m) => game.netMeta(m),
       shot: (v, age) => game.remoteShot(v, age),
+      loot: (id, u) => game.netLoot(id, u),
+      team: (t, prev) => {
+        applyProgress();
+        const l = t.last;
+        if (l && l.what && l.u !== net.uid && (!prev.last || prev.last.t !== l.t)) {
+          hud.toast(`${l.by} got ${l.what}`);
+          audio.play('powerup', { vol: 0.5 });
+        }
+      },
       players: () => {},
-      records: () => {},
       status: (c) => menuUI.setStatus(c ? 'Connected to the shared world' : 'Reconnecting…', c),
     };
     net.attach();
@@ -534,8 +565,8 @@ async function boot() {
     started = true;
     hudEl.classList.remove('hidden');
     $('online').classList.add('hidden');
-    progress.ammo = progress.ammo.map(() => 999);
-    progress.gems = 1240;
+    progress.local.ammo = progress.local.ammo.map(() => 999);
+    progress.local.gems = 1240;
     progress.changed();
     player.teleport(7, 0, 19);
     player.yaw = Math.atan2(7, 19);

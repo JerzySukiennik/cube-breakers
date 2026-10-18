@@ -131,6 +131,10 @@ export class HUD {
     this.onlineN.textContent = offline ? 'Offline · local save' : connected ? `${n} online` : 'Reconnecting…';
   }
 
+  teamMode(on) {
+    $('wallet').classList.toggle('team', on);
+  }
+
   tab(show, data) {
     this.tabEl.classList.toggle('on', show);
     if (!show || !data) return;
@@ -138,11 +142,11 @@ export class HUD {
     if (key === this.tabKey) return;
     this.tabKey = key;
     const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    const online = data.online.map((p) => `<div class="row-p ${p.me ? 'me' : ''}"><span class="dot" style="background:${p.color}"></span><span class="nm">${esc(p.nick)}</span><span class="v">${fmt(p.dmg)} dmg</span></div>`).join('');
-    const recs = data.records.length
-      ? data.records.map((r, i) => `<div class="row-p ${r.me ? 'me' : ''}"><span class="rk">${i + 1}.</span><span class="nm">${esc(r.n || 'Player')}</span><span class="v">${fmt(r.b || 0)}</span></div>`).join('')
-      : `<div class="empty">${data.offline ? 'Records need the shared world.' : 'No records yet. Break something!'}</div>`;
-    this.tabEl.innerHTML = `<h2>${esc(data.title)}</h2><div class="cols"><div><h3>Online now · damage this level</h3>${online}</div><div><h3>All-time · blocks broken</h3>${recs}</div></div>`;
+    const online = data.online.map((p) => `<div class="row-p ${p.me ? 'me' : ''}"><span class="dot" style="background:${p.color}"></span><span class="nm">${esc(p.nick)}${p.me ? ' (you)' : ''}</span></div>`).join('');
+    const t = data.team;
+    const team = [['Gems in the pool', t.wallet], ['Blocks broken', t.blocks], ['Levels cleared', t.levels], ['Gems earned', t.gems]]
+      .map(([k, v]) => `<div class="row-p"><span class="nm">${k}</span><span class="v">${fmt(v)}</span></div>`).join('');
+    this.tabEl.innerHTML = `<h2>${esc(data.title)}</h2><div class="cols"><div><h3>${data.offline ? 'Playing solo' : `Online now · ${data.online.length}`}</h3>${online}</div><div><h3>${data.offline ? 'Your record' : 'Team record'}</h3>${team}</div></div>`;
   }
 
   showBanner(html, t = 3) {

@@ -91,9 +91,10 @@ export class Menu {
     $('w-online').textContent = d.offline ? 'Offline · solo' : `${d.online.length} online`;
     $('w-players').innerHTML = d.online.slice(0, 7).map((p) => `<li class="${p.me ? 'me' : ''}"><span class="dot" style="background:${p.color}"></span><span class="nm">${esc(p.nick)}${p.me ? ' (you)' : ''}</span></li>`).join('')
       + (d.online.length > 7 ? `<li class="empty">+${d.online.length - 7} more</li>` : '');
-    $('w-top').innerHTML = d.top.length
-      ? d.top.slice(0, 5).map((r, i) => `<li class="${r.me ? 'me' : ''}"><span class="rk">${i + 1}.</span><span class="nm">${esc(r.n || 'Player')}</span><span class="v">${fmt(r.b || 0)}</span></li>`).join('')
-      : `<li class="empty">${d.offline ? 'Records need the shared world.' : 'No records yet. Be the first!'}</li>`;
+    const t = d.team;
+    $('w-top').innerHTML = [['Gems in the pool', t.wallet], ['Blocks broken', t.blocks], ['Levels cleared', t.levels]]
+      .map(([k, v]) => `<li><span class="nm">${k}</span><span class="v">${fmt(v)}</span></li>`).join('');
+    $('w-team').textContent = d.offline ? 'Your record' : 'Team record';
   }
 
   setColor(i) {

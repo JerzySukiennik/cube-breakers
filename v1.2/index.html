@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cube Breakers</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='6' y='6' width='52' height='52' rx='12' fill='%232f8ff0'/%3E%3Cpath d='M24 8v48M40 8v48M8 24h48M8 40h48' stroke='%23bfe6ff' stroke-width='3'/%3E%3C/svg%3E">
+<meta name="description" content="Break a giant cube with balls that bounce forever.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:ital,wght@0,600;0,700;0,800;0,900;1,900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+    "rapier": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud" class="hidden">
+  <div id="progress"><div id="progress-fill"></div><span id="progress-text">4,096 Blocks to Go</span></div>
+  <div id="wallet"><i class="gem"></i><span id="wallet-n">0</span></div>
+  <div id="online"><i></i><span id="online-n">Offline</span></div>
+  <div id="tab"></div>
+  <div id="crosshair"></div>
+  <div id="fuel"><div id="fuel-fill"></div></div>
+  <div id="toast"></div>
+  <div id="tip"></div>
+  <div id="banner"></div>
+  <div id="type-label"></div>
+  <div id="bottom">
+    <div id="hotbar"></div>
+    <div id="ballcount"><span class="mini-ball"></span><span id="ballcount-n">0</span><span id="ballcount-cap">/80</span></div>
+    <div id="bag"><span id="bag-chips"></span><span id="bag-n">×0</span><span class="bag-v"><i class="gem"></i><span id="bag-v">0</span></span></div>
+  </div>
+  <div id="fps" class="hidden">0 fps</div>
+</div>
+
+<div id="menu" class="hidden">
+  <div class="m-shade"></div>
+  <div class="m-main">
+    <div class="logo "><div class="l1"><b style="--c:#2f9bff;--i:0">C</b><b style="--c:#3fcf4e;--i:1">U</b><b style="--c:#ffc531;--i:2">B</b><b style="--c:#ff9a1f;--i:3">E</b></div><div class="l2"><b style="--c:#ff6fcf;--i:4">B</b><b style="--c:#2f9bff;--i:5">R</b><b style="--c:#8fe032;--i:6">E</b><b style="--c:#b08cff;--i:7">A</b><b style="--c:#ffc531;--i:8">K</b><b style="--c:#46d7ff;--i:9">E</b><b style="--c:#ff9a1f;--i:10">R</b><b style="--c:#3fcf4e;--i:11">S</b></div></div>
+    <div class="card main-card">
+      <nav class="tabs" id="tabs">
+        <button data-tab="play" class="on">Play</button>
+        <button data-tab="settings">Settings</button>
+        <button data-tab="controls">Controls</button>
+        <button data-tab="credits">Credits</button>
+      </nav>
+      <section class="pane on" data-pane="play">
+        <div class="player-row">
+          <div class="bean-box"><canvas id="bean"></canvas></div>
+          <div class="player-fields">
+            <label class="field">Your nick<input id="nick" maxlength="16" spellcheck="false" autocomplete="off"></label>
+            <div class="field">Your colour<div class="colors" id="colors"></div></div>
+            <div class="mystats">
+              <div><i class="gem"></i><b id="ms-gems">0</b><span>team gems</span></div>
+              <div><i class="cubelet"></i><b id="ms-blocks">0</b><span>blocks</span></div>
+              <div><i class="star"></i><b id="ms-levels">0</b><span>levels</span></div>
+            </div>
+          </div>
+        </div>
+        <button id="play" class="play-btn"><span class="tri"></span><span id="play-label">PLAY</span></button>
+        <p id="net-status" class="net">Connecting to the shared world&hellip;</p>
+      </section>
+      <section class="pane" data-pane="settings">
+        <div class="group">
+          <h4>Audio</h4>
+          <div class="srow"><span>Music</span><input id="set-music" type="range" min="0" max="1" step="0.01"><output id="o-music"></output></div>
+          <div class="srow"><span>Effects</span><input id="set-sfx" type="range" min="0" max="1" step="0.01"><output id="o-sfx"></output></div>
+        </div>
+        <div class="group">
+          <h4>Mouse</h4>
+          <div class="srow"><span>Sensitivity</span><input id="set-sens" type="range" min="0.3" max="3" step="0.05"><output id="o-sens"></output></div>
+        </div>
+        <div class="group">
+          <h4>Graphics</h4>
+          <div class="srow"><span>Grass</span><div class="seg" id="seg-grass"><button data-v="off">Off</button><button data-v="low">Low</button><button data-v="medium">Medium</button><button data-v="high">High</button></div></div>
+          <div class="srow"><span>Resolution</span><div class="seg" id="seg-res"><button data-v="1">Low</button><button data-v="1.5">Medium</button><button data-v="2">High</button></div></div>
+          <div class="srow"><span>Show FPS</span><button class="switch" id="set-fps" role="switch" aria-checked="false"><i></i></button></div>
+        </div>
+        <div class="group">
+          <h4>Gameplay</h4>
+          <div class="srow"><span>Balls in the air</span><button id="btn-clear" class="small-btn">Pop them all</button></div>
+        </div>
+        <div class="debug hidden" id="debug-row">
+          <h4>Debug</h4>
+          <div class="dbg-btns">
+            <button id="dbg-gems" class="small-btn">+5,000 gems</button>
+            <button id="dbg-ammo" class="small-btn">+50 of each ball</button>
+            <button id="dbg-level" class="small-btn">Next level</button>
+            <button id="dbg-reset" class="small-btn">Wipe save</button>
+            <button id="dbg-world" class="small-btn">Reset shared world</button>
+          </div>
+        </div>
+      </section>
+      <section class="pane" data-pane="controls">
+        <div class="keys-grid">
+          <div class="k"><span class="caps"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>Move</span></div>
+          <div class="k"><span class="caps"><kbd class="wide">Space</kbd></span><span>Jump · hold to fly with the Jetpack</span></div>
+          <div class="k"><span class="caps"><kbd class="wide">Shift</kbd></span><span>Sprint</span></div>
+          <div class="k"><span class="caps"><kbd class="mouse l"></kbd></span><span>Shoot (hold for auto)</span></div>
+          <div class="k"><span class="caps"><kbd class="mouse r"></kbd></span><span>Show the trajectory</span></div>
+          <div class="k"><span class="caps"><kbd>1</kbd><kbd>-</kbd><kbd>8</kbd></span><span>Pick a ball (or mouse wheel)</span></div>
+          <div class="k"><span class="caps"><kbd>E</kbd></span><span>Buy, recycle, take at the Ball Shop</span></div>
+          <div class="k"><span class="caps"><kbd class="wide">Tab</kbd></span><span>Players and records</span></div>
+          <div class="k"><span class="caps"><kbd>Z</kbd><kbd>X</kbd><kbd>C</kbd><kbd>V</kbd><kbd>B</kbd></span><span>Emotes</span></div>
+          <div class="k"><span class="caps"><kbd class="wide">Esc</kbd></span><span>Back to this menu</span></div>
+        </div>
+        <p class="hint">Balls fly forever between blocks and die on the force field. Broken blocks drop loot: walk over it, then recycle it at the Ball Shop behind the spawn.</p>
+      </section>
+      <section class="pane" data-pane="credits">
+        <div class="credits">
+          <p><b>Cube Breakers</b> by Jurek · Gzowo</p>
+          <p>Music: "Local Forecast - Elevator" and "Carefree" by Kevin MacLeod (incompetech.com), licensed under Creative Commons: By Attribution 4.0.</p>
+          <p>Sound effects: Kenney.nl (CC0) and freesound.org contributors Breviceps, DuffyBro and others (CC0).</p>
+          <p>Built with three.js, Rapier and Firebase.</p>
+        </div>
+      </section>
+    </div>
+  </div>
+  <aside class="card world-card">
+    <h3>Shared world</h3>
+    <div class="w-level"><b id="w-level">Level 1</b><span id="w-shape">The Cube</span></div>
+    <div class="w-bar"><div id="w-fill"></div></div>
+    <p class="w-left" id="w-left">4,096 blocks to go</p>
+    <h4><i class="live" id="w-live"></i><span id="w-online">Offline</span></h4>
+    <ul class="w-list" id="w-players"></ul>
+    <h4 id="w-team">Team record</h4>
+    <ul class="w-list" id="w-top"></ul>
+  </aside>
+</div>
+
+<div id="loading">
+  <div class="load-box">
+    <div class="logo big"><div class="l1"><b style="--c:#2f9bff;--i:0">C</b><b style="--c:#3fcf4e;--i:1">U</b><b style="--c:#ffc531;--i:2">B</b><b style="--c:#ff9a1f;--i:3">E</b></div><div class="l2"><b style="--c:#ff6fcf;--i:4">B</b><b style="--c:#2f9bff;--i:5">R</b><b style="--c:#8fe032;--i:6">E</b><b style="--c:#b08cff;--i:7">A</b><b style="--c:#ffc531;--i:8">K</b><b style="--c:#46d7ff;--i:9">E</b><b style="--c:#ff9a1f;--i:10">R</b><b style="--c:#3fcf4e;--i:11">S</b></div></div>
+    <div class="load-bar"><div id="load-fill"></div></div>
+    <p id="load-text">Stacking blocks&hellip;</p>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

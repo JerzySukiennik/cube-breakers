@@ -32,6 +32,7 @@ export class Cube {
     this.visited = new Uint8Array(SIZE);
     this.queue = new Int32Array(SIZE);
     this.dist = new Int16Array(SIZE);
+    this.genKind = new Uint8Array(SIZE);
     this.level = 1;
     this.shape = null;
     this.locked = false;
@@ -97,6 +98,7 @@ export class Cube {
       else if (layer >= 1 && layer <= 5 && r < 0.027) kind = KIND.CRATE;
       const sp = SPECIAL[kind];
       k[i] = kind;
+      this.genKind[i] = kind;
       this.layer[i] = layer;
       this.maxHp[i] = this.hp[i] = Math.round(L.hp * hpMul * (sp ? sp.hpMul : 1));
       this.pattern[i] = sp ? sp.pattern : L.pattern;

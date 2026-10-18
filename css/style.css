@@ -384,3 +384,5 @@ kbd {
 .load-bar { width: 280px; height: 12px; border-radius: 6px; overflow: hidden; background: rgba(255, 255, 255, 0.3); border: 1px solid rgba(255, 255, 255, 0.7); }
 #load-fill { height: 100%; background: #fff; transform-origin: left; transform: scaleX(0.05); transition: transform 0.3s; }
 #load-text { margin: -8px 0 0; font-weight: 800; text-shadow: 0 1px 3px rgba(0, 30, 80, 0.4); }
+
+#wallet.team::before { content: 'TEAM'; font-size: 10px; font-weight: 900; letter-spacing: 0.08em; opacity: 0.8; margin-right: -2px; }

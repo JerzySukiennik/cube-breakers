@@ -5,6 +5,7 @@ import { N, HALF, SIZE, KIND, LAYERS, BALL_TYPES, MINI, TNT_BLAST, BALL_CAP, DOM
 import { shapeFor, levelValueMul } from './shapes.js';
 import { PACKS } from './progress.js';
 import { cellOf } from './chunks.js';
+import { hash2 } from './rng.js';
 
 const SPAWN = [0, 0, 30];
 
@@ -229,7 +230,7 @@ export class Game {
     }
     this.dealt += d;
     if (net) {
-      net.damage(i, d, src && src.credit, !!(src && src.cfg && src.cfg.gold));
+      net.damage(i, d, !!(src && src.cfg && src.cfg.gold));
       if (net.total(i) >= cube.maxHp[i]) net.flushT = 0;
       return;
     }
@@ -258,7 +259,7 @@ export class Game {
     }
     this.dealt += d;
     if (net) {
-      net.damage(cell, d, src && src.credit, !!(src && src.cfg && src.cfg.gold));
+      net.damage(cell, d, !!(src && src.cfg && src.cfg.gold));
       if (net.total(cell) >= b.maxHp) net.flushT = 0;
       return;
     }
@@ -289,24 +290,24 @@ export class Game {
       this.audio.play('crate', { pos: center });
       this.fx.sparkle(center, '#bfe9ff', 14, 4);
     }
+    this.spawnLoot(b, center, !!(src && src.cfg && src.cfg.gold));
+    if (this.net && this.net.isLeader) this.net.countBlocks(1);
+  }
+
+  spawnLoot(b, center, goldHit) {
     const cell = cellOf(b);
     const info = this.dropInfo(b);
     info.cell = cell;
-    let owner = (src && src.owner) || this.owner;
-    let gold = !!(src && src.cfg && src.cfg.gold);
-    if (this.net) {
-      const u = this.net.kills.get(cell);
-      owner = u ? (u === this.net.uid ? this.owner : u) : null;
-      const h = this.net.hits.get(cell);
-      gold = !!(h && h.gold);
-    }
     let n = 1;
     if (b.kind !== KIND.CRATE) {
-      if (gold) n++;
-      if (Math.random() < this.progress.luck) n++;
+      if (this.net ? this.net.gold.has(cell) : goldHit) n++;
+      if (hash2(cell, 977) < this.progress.luck) n++;
     }
-    for (let k = 0; k < n; k++) this.drops.spawn(center, info, owner);
-    if (this.net && owner === null) this.net.claim(cell);
+    for (let k = 0; k < n; k++) {
+      const id = `${cell}_${k}`;
+      if (this.net && this.net.loot.has(id)) continue;
+      this.drops.spawn(center, info, this.owner, 1, this.net ? id : null, this.net ? cell * 31 + k * 7919 + this.seed : null);
+    }
   }
 
   netDamage(i, total) {
@@ -325,12 +326,9 @@ export class Game {
     }
   }
 
-  netKill(i, uid) {
-    const mine = uid === this.net.uid;
-    if (mine) this.net.addKill();
-    for (const d of this.drops.list) {
-      if (d.owner === null && d.info.cell === i) d.owner = mine ? this.owner : uid;
-    }
+  netLoot(id, uid) {
+    if (uid === this.net.uid) return;
+    this.drops.takenBy(id, this.net.playerPos(uid));
   }
 
   netIce(i, until) {
@@ -364,9 +362,14 @@ export class Game {
     this.chunks.clear();
     this.cube.generate(m.level, m.seed);
     const c = this.cube;
+    const lootCells = [];
     for (const [i, total] of net.dmg) {
       if (c.kind[i] === KIND.EMPTY) continue;
-      if (total >= c.maxHp[i]) { c.kind[i] = KIND.EMPTY; c.count--; } else c.hp[i] = c.maxHp[i] - total;
+      if (total >= c.maxHp[i]) {
+        lootCells.push(i);
+        c.kind[i] = KIND.EMPTY;
+        c.count--;
+      } else c.hp[i] = c.maxHp[i] - total;
     }
     for (const [i, until] of net.ice) {
       const left = (until - net.now()) / 1000;
@@ -384,6 +387,16 @@ export class Game {
     }
     c.structureChanged = false;
     this.buildColliders();
+    this.drops.clear();
+    const center = new THREE.Vector3();
+    let spawned = 0;
+    for (const i of lootCells) {
+      if (spawned > 500) break;
+      const b = { gx: i % N, gy: (i / (N * N)) | 0, gz: ((i / N) | 0) % N, kind: c.genKind[i], layer: c.layer[i], pattern: c.pattern[i], r: c.color[i * 3], g: c.color[i * 3 + 1], b: c.color[i * 3 + 2] };
+      c.center(i, center);
+      this.spawnLoot(b, center, false);
+      spawned++;
+    }
     this.explosions.length = 0;
     this.done = false;
     this.advanceSent = false;
@@ -430,8 +443,7 @@ export class Game {
 
   explodeDamage(e) {
     const { c, radius, damage } = e;
-    let src = e.src && e.src.cfg ? e.src : BLAST;
-    if (this.net && src.tnt != null) src = { cfg: src.cfg, credit: this.net.kills.get(src.tnt) || this.net.uid };
+    const src = e.src && e.src.cfg ? e.src : BLAST;
     const time = this.time;
     const cube = this.cube;
     const x0 = Math.max(0, Math.floor(c.x - radius + HALF)), x1 = Math.min(N - 1, Math.floor(c.x + radius + HALF));
@@ -716,8 +728,10 @@ export class Game {
       this.done = true;
       this.doneT = 7;
       const bonus = Math.round(250 * levelValueMul(this.level));
-      this.progress.earn(bonus);
-      this.progress.stats.levels++;
+      if (!this.net || this.net.isLeader) {
+        this.progress.earn(bonus);
+        this.progress.levelCleared();
+      }
       const next = shapeFor(this.level + 1);
       this.hud.showBanner(`<b>LEVEL ${this.level} CLEARED!</b><span>+◇ ${bonus.toLocaleString('en-US')} bonus · Next up: ${next.name}</span>`, 6);
       this.audio.play('levelup');

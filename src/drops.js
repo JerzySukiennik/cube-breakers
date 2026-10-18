@@ -2,6 +2,7 @@
 
 import * as THREE from 'three';
 import { DOME_R } from './config.js';
+import { mulberry32 } from './rng.js';
 import { createBlockGeometry, addBlockAttributes } from './blockMaterial.js';
 
 const CAP = 700;
@@ -29,25 +30,45 @@ export class Drops {
     scene.add(this.mesh);
     this.list = [];
     this.onCollect = null;
+    this.claim = null;
+    this.byId = new Map();
     this.time = 0;
     this.me = 'me';
   }
 
-  clear() { this.list.length = 0; }
+  clear() {
+    this.list.length = 0;
+    this.byId.clear();
+  }
 
-  spawn(pos, info, owner, burst = 1) {
-    if (this.list.length >= CAP) this.list.shift();
-    const a = Math.random() * Math.PI * 2;
-    const sp = (1.5 + Math.random() * 2.5) * burst;
+  spawn(pos, info, owner, burst = 1, id = null, seed = null) {
+    if (this.list.length >= CAP) {
+      const old = this.list.shift();
+      if (old.id) this.byId.delete(old.id);
+    }
+    const rnd = seed == null ? Math.random : mulberry32(seed);
+    const a = rnd() * Math.PI * 2;
+    const sp = (1.5 + rnd() * 2.5) * burst;
     const d = {
-      pos: pos.clone(),
-      vel: new THREE.Vector3(Math.cos(a) * sp, 3 + Math.random() * 3, Math.sin(a) * sp),
-      q: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.random() * 6, Math.random() * 6, Math.random() * 6)),
-      spin: new THREE.Vector3((Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12),
-      info, owner, age: 0, state: 0, base: 0, top: 0, check: 0, yaw: Math.random() * 6, magT: 0, pop: 0,
+      id, pos: pos.clone(),
+      vel: new THREE.Vector3(Math.cos(a) * sp, 3 + rnd() * 3, Math.sin(a) * sp),
+      q: new THREE.Quaternion().setFromEuler(new THREE.Euler(rnd() * 6, rnd() * 6, rnd() * 6)),
+      spin: new THREE.Vector3((rnd() - 0.5) * 12, (rnd() - 0.5) * 12, (rnd() - 0.5) * 12),
+      info, owner, age: 0, state: 0, base: 0, top: 0, check: 0, yaw: rnd() * 6, magT: 0, pop: 0,
+      claim: 0, target: null,
     };
     this.list.push(d);
+    if (id) this.byId.set(id, d);
     return d;
+  }
+
+  takenBy(id, pos) {
+    const d = this.byId.get(id);
+    if (!d || d.claim === 2) return;
+    d.claim = 3;
+    d.state = 3;
+    d.magT = 0;
+    d.target = pos ? new THREE.Vector3(pos.x, pos.y, pos.z) : null;
   }
 
   restore(arr) {
@@ -60,7 +81,7 @@ export class Drops {
   }
 
   serialize() {
-    return this.list.filter((d) => d.state !== 2 && d.owner === this.me).map((d) => [
+    return this.list.filter((d) => d.state < 2).map((d) => [
       +d.pos.x.toFixed(2), +d.pos.y.toFixed(2), +d.pos.z.toFixed(2), d.info.value, d.info.key,
       +d.info.r.toFixed(3), +d.info.g.toFixed(3), +d.info.b.toFixed(3), d.info.pattern, d.info.kind,
     ]);
@@ -85,15 +106,34 @@ export class Drops {
     for (let i = 0; i < list.length; i++) {
       const d = list[i];
       d.age += dt;
-      if (d.owner !== owner && d.age > 25) continue;
       d.pop = Math.min(1, d.pop + dt * 6);
-      if (d.state !== 2 && d.owner === owner && d.age > 0.4 && d.pos.distanceToSquared(chest) < magnetR * magnetR) d.state = 2;
+      if (d.state === 3) {
+        d.magT += dt;
+        if (!d.target || d.magT > 0.8) { if (d.id) this.byId.delete(d.id); continue; }
+        tv.subVectors(d.target, d.pos);
+        const L = tv.length();
+        if (L < 0.6) { if (d.id) this.byId.delete(d.id); continue; }
+        d.vel.lerp(tv.multiplyScalar((8 + d.magT * 30) / L), Math.min(1, dt * 9));
+        d.pos.addScaledVector(d.vel, dt);
+        list[w++] = d;
+        continue;
+      }
+      if (d.state !== 2 && d.age > 0.4 && d.pos.distanceToSquared(chest) < magnetR * magnetR) {
+        d.state = 2;
+        if (this.claim && d.id && d.claim === 0) {
+          d.claim = 1;
+          this.claim(d.id).then((ok) => { if (d.claim === 1) d.claim = ok ? 2 : 3; });
+        } else d.claim = 2;
+      }
       if (d.state === 2) {
         d.magT += dt;
         tv.subVectors(chest, d.pos);
         const L = tv.length();
+        if (d.claim === 3) { d.state = 3; d.magT = 0.6; list[w++] = d; continue; }
         if (L < 0.5 || d.magT > 3) {
-          if (this.onCollect) this.onCollect(d);
+          if (d.claim === 1 && d.magT < 3) { d.pos.copy(chest); list[w++] = d; continue; }
+          if (d.id) this.byId.delete(d.id);
+          if (d.claim === 2 && this.onCollect) this.onCollect(d);
           continue;
         }
         d.vel.lerp(tv.multiplyScalar((7 + d.magT * 26) / L), Math.min(1, dt * 9));
@@ -160,19 +200,19 @@ export class Drops {
     const fx = this.fxAttr.array;
     let n = 0;
     for (const d of this.list) {
-      let s = SIZE * (0.4 + 0.6 * d.pop) * (d.owner === this.me ? 1 : 0.6);
+      let s = SIZE * (0.4 + 0.6 * d.pop);
       if (d.state === 1) {
         const bob = Math.sin(this.time * 2.4 + d.yaw * 3) * 0.07;
         d.pos.y += (d.base + bob - d.pos.y) * 0.15;
         tq.setFromAxisAngle(UP, d.yaw);
         d.q.slerp(tq, 0.12);
       }
-      if (d.state === 2) s *= Math.max(0.35, 1 - d.magT * 1.5);
+      if (d.state >= 2) s *= Math.max(0.35, 1 - d.magT * 1.5);
       tm.compose(d.pos, d.q, ts.setScalar(s));
       tm.toArray(m, n * 16);
       col[n * 3] = d.info.r; col[n * 3 + 1] = d.info.g; col[n * 3 + 2] = d.info.b;
       pat[n] = d.info.pattern;
-      fx[n * 3] = d.owner !== this.me ? 0 : d.state === 1 ? 0.16 + 0.1 * Math.sin(this.time * 4 + d.yaw) : 0.1;
+      fx[n * 3] = d.state === 1 ? 0.16 + 0.1 * Math.sin(this.time * 4 + d.yaw) : 0.1;
       fx[n * 3 + 1] = 0;
       n++;
     }

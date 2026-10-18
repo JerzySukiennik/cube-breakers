@@ -1,12 +1,16 @@
-// Cube Breakers: Firebase RTDB sync (anonymous auth, players, shared block damage, kill claims, chunk authority, shots, records).
+// Cube Breakers: Firebase RTDB sync (anonymous auth, players, shared block damage, shared loot, team pool, chunk authority, shots).
 
 import { firebaseConfig } from './firebase-config.js';
 
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.5';
-const ROOT = 'cubeBreakers';
+const ROOT = new URLSearchParams(location.search).get('realm') === 'test' ? 'cubeBreakersTest' : 'cubeBreakers';
 const FLUSH = 0.1;
 const SEND = 0.1;
 const STALE_MS = 12000;
+
+export function defaultTeam() {
+  return { gems: 0, up: {}, ammo: { 0: 40 }, stats: { blocks: 0, levels: 0, gems: 0 } };
+}
 
 export class Net {
   constructor() {
@@ -17,15 +21,17 @@ export class Net {
     this.db = null;
     this.meta = null;
     this.epoch = 0;
-    this.initial = null;
     this.dmg = new Map();
     this.pend = new Map();
     this.hits = new Map();
     this.ice = new Map();
-    this.kills = new Map();
+    this.loot = new Map();
+    this.gold = new Set();
     this.chunks = new Map();
     this.players = new Map();
-    this.records = [];
+    this.team = defaultTeam();
+    this.ammoPend = new Map();
+    this.statsPend = { blocks: 0, levels: 0 };
     this.offset = 0;
     this.joinedAt = 0;
     this.isLeader = true;
@@ -36,8 +42,7 @@ export class Net {
     this.sendT = 0;
     this.cleanT = 2;
     this.oldShotsT = 6;
-    this.recordT = 2;
-    this.recordAdd = 0;
+    this.statsT = 2;
     this.shotKeys = [];
     this.me = null;
     this.sentChunks = new Set();
@@ -82,26 +87,46 @@ export class Net {
     }
     this.meta = meta;
     this.epoch = meta.epoch;
+    const tref = this.r(`${ROOT}/team`);
+    let team = (await get(tref)).val();
+    if (!team) {
+      const res = await runTransaction(tref, (cur) => cur || defaultTeam());
+      team = res.snapshot.val();
+    }
+    this.team = this.normTeam(team);
     const data = (await get(this.r(this.base()))).val() || {};
     this.ingest(data);
   }
 
+  normTeam(t) {
+    const d = defaultTeam();
+    if (!t) return d;
+    return { gems: t.gems || 0, up: t.up || {}, ammo: t.ammo || {}, stats: Object.assign(d.stats, t.stats || {}), last: t.last || null };
+  }
+
   ingest(data) {
     this.dmg.clear();
-    this.kills.clear();
     this.ice.clear();
+    this.loot.clear();
+    this.gold.clear();
     this.chunks.clear();
     for (const [k, v] of Object.entries(data.dmg || {})) this.dmg.set(+k, v);
-    for (const [k, v] of Object.entries(data.kill || {})) if (v && v.u) this.kills.set(+k, v.u);
     for (const [k, v] of Object.entries(data.ice || {})) this.ice.set(+k, v);
+    for (const [k, v] of Object.entries(data.loot || {})) if (v && v.u) this.loot.set(k, v.u);
+    for (const k of Object.keys(data.gold || {})) this.gold.add(+k);
     for (const [k, v] of Object.entries(data.chunks || {})) this.chunks.set(k, v);
   }
 
   attach() {
-    const { onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, limitToLast } = this.fb;
+    const { onValue, onChildAdded, onChildChanged, onChildRemoved } = this.fb;
     this.unsubs.push(onValue(this.r(`${ROOT}/world/meta`), (s) => {
       const m = s.val();
       if (m && m.epoch !== this.epoch) this.switchEpoch(m);
+    }));
+    this.unsubs.push(onValue(this.r(`${ROOT}/team`), (s) => {
+      const prev = this.team;
+      this.team = this.normTeam(s.val());
+      if (this.cb.team) this.cb.team(this.team, prev);
     }));
     this.attachEpoch();
     const pr = this.r(`${ROOT}/players`);
@@ -119,13 +144,6 @@ export class Net {
       if (age > 1.5) return;
       if (this.cb.shot) this.cb.shot(v, Math.max(0, age));
     }));
-    this.unsubs.push(onValue(query(this.r(`${ROOT}/records`), orderByChild('b'), limitToLast(10)), (s) => {
-      const list = [];
-      s.forEach((c) => { list.push({ uid: c.key, ...c.val() }); });
-      list.sort((a, b) => b.b - a.b);
-      this.records = list;
-      if (this.cb.records) this.cb.records(list);
-    }));
   }
 
   attachEpoch() {
@@ -142,13 +160,13 @@ export class Net {
       this.dmg.set(i, v);
       if (this.cb.damage) this.cb.damage(i, v);
     });
-    on('kill', (s) => {
-      const i = +s.key;
+    on('loot', (s) => {
       const v = s.val();
-      if (!v || !v.u || this.kills.get(i) === v.u) return;
-      this.kills.set(i, v.u);
-      if (this.cb.kill) this.cb.kill(i, v.u);
+      if (!v || !v.u || this.loot.get(s.key) === v.u) return;
+      this.loot.set(s.key, v.u);
+      if (this.cb.loot) this.cb.loot(s.key, v.u);
     });
+    on('gold', (s) => { this.gold.add(+s.key); });
     on('ice', (s) => {
       this.ice.set(+s.key, s.val());
       if (this.cb.ice) this.cb.ice(+s.key, s.val());
@@ -215,6 +233,19 @@ export class Net {
     return [...this.players.values()].filter((p) => t - p.seen < STALE_MS);
   }
 
+  playerPos(uid) {
+    const p = this.players.get(uid);
+    if (!p || !p.buf.length) return null;
+    const b = p.buf[p.buf.length - 1];
+    return { x: b.x, y: b.y + 1, z: b.z };
+  }
+
+  nickOf(uid) {
+    if (uid === this.uid) return this.me ? this.me.n : 'You';
+    const p = this.players.get(uid);
+    return p ? p.v.n : 'Someone';
+  }
+
   electLeader() {
     let best = { j: this.joinedAt, uid: this.uid };
     for (const p of this.livePlayers()) {
@@ -226,30 +257,75 @@ export class Net {
     if (was !== this.isLeader && this.cb.leader) this.cb.leader(this.isLeader);
   }
 
-  damage(i, d, credit, gold) {
+  damage(i, d, gold) {
     this.pend.set(i, (this.pend.get(i) || 0) + d);
-    this.hits.set(i, { t: performance.now(), credit: credit || this.uid, gold });
+    this.hits.set(i, performance.now());
+    if (gold && !this.gold.has(i)) {
+      this.gold.add(i);
+      this.fb.set(this.r(`${this.base()}/gold/${i}`), 1).catch(() => {});
+    }
   }
 
   total(i) { return (this.dmg.get(i) || 0) + (this.pend.get(i) || 0); }
 
+  ammoLeft(t) { return (this.team.ammo[t] || 0) - (this.ammoPend.get(t) || 0); }
+
+  useAmmo(t) {
+    if (this.ammoLeft(t) <= 0) return false;
+    this.ammoPend.set(t, (this.ammoPend.get(t) || 0) + 1);
+    return true;
+  }
+
   flush() {
-    if (!this.pend.size || !this.fb) return;
+    if (!this.fb) return;
+    if (!this.pend.size && !this.ammoPend.size) return;
     const { update, increment } = this.fb;
     const u = {};
     const base = this.base();
     for (const [i, d] of this.pend) u[`${base}/dmg/${i}`] = increment(Math.round(d * 100) / 100);
+    for (const [t, n] of this.ammoPend) u[`${ROOT}/team/ammo/${t}`] = increment(-n);
     this.pend.clear();
-    update(this.r(''), u).catch((e) => console.warn('dmg', e));
+    this.ammoPend.clear();
+    update(this.r(''), u).catch((e) => console.warn('flush', e));
   }
 
-  claim(i) {
-    const h = this.hits.get(i);
-    if (!h || performance.now() - h.t > 4000 || this.kills.has(i)) return;
-    this.fb.runTransaction(this.r(`${this.base()}/kill/${i}`), (cur) => (cur ? undefined : { u: h.credit, t: Date.now() })).catch(() => {});
+  async claimLoot(id) {
+    if (this.loot.has(id)) return this.loot.get(id) === this.uid;
+    try {
+      const res = await this.fb.runTransaction(this.r(`${this.base()}/loot/${id}`), (cur) => (cur ? undefined : { u: this.uid, t: Date.now() }));
+      const v = res.snapshot.val();
+      return !!(res.committed && v && v.u === this.uid);
+    } catch { return false; }
   }
 
-  creditOf(i) { return this.kills.get(i); }
+  async teamTx(fn) {
+    try {
+      const res = await this.fb.runTransaction(this.r(`${ROOT}/team`), (cur) => {
+        const t = this.normTeam(cur);
+        const out = fn(t);
+        if (!out) return undefined;
+        out.last = { by: this.me ? this.me.n : 'Someone', u: this.uid, what: out.lastWhat || '', t: Date.now() };
+        delete out.lastWhat;
+        return out;
+      });
+      return !!res.committed;
+    } catch (e) {
+      console.warn('team', e);
+      return false;
+    }
+  }
+
+  addGems(v) {
+    const { update, increment } = this.fb;
+    update(this.r(''), { [`${ROOT}/team/gems`]: increment(v), [`${ROOT}/team/stats/gems`]: increment(v) }).catch(() => {});
+  }
+
+  addAmmo(t, n) {
+    this.fb.update(this.r(''), { [`${ROOT}/team/ammo/${t}`]: this.fb.increment(n) }).catch(() => {});
+  }
+
+  countBlocks(n) { this.statsPend.blocks += n; }
+  countLevel() { this.statsPend.levels += 1; }
 
   freeze(i, ms) {
     const until = this.now() + ms;
@@ -277,7 +353,7 @@ export class Net {
     this.fb.set(this.r(`${ROOT}/players/${this.uid}`), {
       n: this.me.n, c: this.me.c, j: this.joinedAt,
       p: [+st.x.toFixed(2), +st.y.toFixed(2), +st.z.toFixed(2)],
-      y: +st.yaw.toFixed(3), a: +st.pitch.toFixed(3), b: st.ball, d: Math.round(st.dmg), e: st.emote, et: st.emoteT,
+      y: +st.yaw.toFixed(3), a: +st.pitch.toFixed(3), b: st.ball, e: st.emote, et: st.emoteT,
     }).catch(() => {});
   }
 
@@ -288,8 +364,6 @@ export class Net {
     this.shotKeys.push({ k: ref.key, at: performance.now() });
   }
 
-  addKill() { this.recordAdd++; }
-
   async advance(fromEpoch) {
     const { runTransaction, remove } = this.fb;
     try {
@@ -297,7 +371,11 @@ export class Net {
         ? { level: cur.level + 1, seed: 1 + Math.floor(Math.random() * 1e6), epoch: cur.epoch + 1 }
         : undefined));
       if (res.committed) setTimeout(() => remove(this.r(`${ROOT}/world/e${fromEpoch}`)).catch(() => {}), 4000);
-    } catch (e) { console.warn('advance', e); }
+      return res.committed;
+    } catch (e) {
+      console.warn('advance', e);
+      return false;
+    }
   }
 
   async resetWorld() {
@@ -312,13 +390,18 @@ export class Net {
     if (this.flushT <= 0) { this.flushT = FLUSH; this.flush(); }
     this.sendT -= dt;
     if (this.sendT <= 0 && playerState && this.connected) { this.sendT = SEND; this.sendPlayer(playerState()); }
-    this.recordT -= dt;
-    if (this.recordT <= 0) {
-      this.recordT = 2;
-      if (this.recordAdd && this.me) {
+    this.statsT -= dt;
+    if (this.statsT <= 0) {
+      this.statsT = 2;
+      const sp = this.statsPend;
+      if (sp.blocks || sp.levels) {
         const { update, increment } = this.fb;
-        update(this.r(''), { [`${ROOT}/records/${this.uid}/b`]: increment(this.recordAdd), [`${ROOT}/records/${this.uid}/n`]: this.me.n }).catch(() => {});
-        this.recordAdd = 0;
+        const u = {};
+        if (sp.blocks) u[`${ROOT}/team/stats/blocks`] = increment(sp.blocks);
+        if (sp.levels) u[`${ROOT}/team/stats/levels`] = increment(sp.levels);
+        sp.blocks = 0;
+        sp.levels = 0;
+        update(this.r(''), u).catch(() => {});
       }
     }
     this.cleanT -= dt;
