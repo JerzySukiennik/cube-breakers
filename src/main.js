@@ -34,6 +34,7 @@ const store = {
 const WORLD_KEY = 'cb.world.v2';
 const ONLINE_KEY = 'cb.online.v1';
 const NO_KEYS = new Set();
+const DEMO = new URLSearchParams(location.search).has('demo');
 const UP = Object.fromEntries(UPGRADES.map((u) => [u.id, u]));
 const fmt = (n) => Math.round(n).toLocaleString('en-US');
 
@@ -114,6 +115,7 @@ async function boot() {
   nickEl.addEventListener('keydown', (e) => e.stopPropagation());
   let net = null;
   let menuUI = null;
+  let demoTick = null;
   let emote = -1, emoteT = 0;
   stageP = 0.7; showLoad();
 
@@ -201,6 +203,7 @@ async function boot() {
   resize();
 
   const saveAll = () => {
+    if (DEMO) return;
     progress.save();
     try {
       if (net) localStorage.setItem(ONLINE_KEY, JSON.stringify({ epoch: net.epoch, drops: drops.serialize() }));
@@ -331,6 +334,7 @@ async function boot() {
 
   function tick(dt) {
     const inp = input.consume();
+    if (demoTick) demoTick(dt);
     fireCd -= dt;
     if (playing) {
       player.look(inp.dx, inp.dy);
@@ -486,6 +490,7 @@ async function boot() {
   drops.clear();
   $('load-text').textContent = 'Joining the shared world…';
   try {
+    if (DEMO) throw new Error('demo mode stays offline');
     const n = new Net();
     await n.connect(9000);
     net = n;
@@ -517,7 +522,7 @@ async function boot() {
     hud.online(0, false, true);
     let restored = false;
     try {
-      const raw = localStorage.getItem(WORLD_KEY);
+      const raw = DEMO ? null : localStorage.getItem(WORLD_KEY);
       if (raw) restored = game.restore(JSON.parse(raw));
     } catch { }
     if (!restored) game.startLevel(1, 1, false);
@@ -525,7 +530,33 @@ async function boot() {
   window.__cb = { game, cube, chunks, balls, player, camera, renderer, launcher, input, audio, progress, drops, pavilion, hud, avatars, net, profile, tick, BALL_TYPES, THREE, select: (k) => select(k), saveAll };
   tick(1 / 60);
   $('loading').classList.add('hidden');
-  menu.classList.remove('hidden');
+  if (DEMO) {
+    started = true;
+    hudEl.classList.remove('hidden');
+    $('online').classList.add('hidden');
+    progress.ammo = progress.ammo.map(() => 999);
+    progress.gems = 1240;
+    progress.changed();
+    player.teleport(7, 0, 19);
+    player.yaw = Math.atan2(7, 19);
+    player.pitch = 0.2;
+    const demoTypes = [0, 0, 1, 2, 5, 3, 0, 4, 2, 7];
+    let demoT = 0.3, demoK = 0;
+    const start = new THREE.Vector3(), off = new THREE.Vector3(), tgt = new THREE.Vector3();
+    demoTick = (dt) => {
+      demoT -= dt;
+      if (demoT > 0) return;
+      demoT = 0.11;
+      const k = demoTypes[demoK++ % demoTypes.length];
+      if (Math.random() < 0.6) tgt.set((Math.random() - 0.5) * 13, 1 + Math.random() * 13, 8);
+      else tgt.set(8, 1 + Math.random() * 13, (Math.random() - 0.5) * 13);
+      start.copy(camera.position).add(off.set(0.3, -0.3, -0.6).applyQuaternion(camera.quaternion));
+      const b = balls.spawn(BALL_TYPES[k], start, tgt.sub(start).normalize(), game.owner, game.time, { dmg: 1, speed: 1 });
+      b.demo = true;
+      game.enforceCap(game.owner);
+      launcher.fire();
+    };
+  } else menu.classList.remove('hidden');
   requestAnimationFrame(frame);
 }
 
