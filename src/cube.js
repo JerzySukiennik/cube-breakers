@@ -115,6 +115,9 @@ export class Cube {
     }
     this.total = this.count;
     this.shape = shape;
+    let peak = 0;
+    for (let i = 0; i < SIZE; i++) if (k[i] !== KIND.EMPTY) peak = Math.max(peak, ((i / NN) | 0) + 1);
+    this.height = peak;
     this.dirty = true;
     this.structureChanged = false;
   }

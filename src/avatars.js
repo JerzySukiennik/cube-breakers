@@ -65,47 +65,62 @@ function emoteTexture(i) {
   return t;
 }
 
+let shared = null;
+function parts() {
+  if (shared) return shared;
+  shared = {
+    bodyGeo: new THREE.CapsuleGeometry(0.36, 1.0, 6, 18),
+    visorGeo: new RoundedBoxGeometry(0.46, 0.2, 0.2, 3, 0.08),
+    barrelGeo: new THREE.CylinderGeometry(0.075, 0.075, 0.55, 16),
+    ringGeo: new THREE.TorusGeometry(0.08, 0.025, 8, 20),
+    gripGeo: new RoundedBoxGeometry(0.14, 0.18, 0.3, 2, 0.05),
+    visorMat: new THREE.MeshPhysicalMaterial({ color: '#16233d', roughness: 0.15, clearcoat: 1, envMapIntensity: 1.4 }),
+    whiteMat: new THREE.MeshStandardMaterial({ color: '#f3f6fa', roughness: 0.4 }),
+    greenMat: new THREE.MeshStandardMaterial({ color: '#33d14f', roughness: 0.35 }),
+    glassMat: new THREE.MeshPhysicalMaterial({ color: '#7fd3ff', roughness: 0.1, transparent: true, opacity: 0.7 }),
+  };
+  return shared;
+}
+
+export function beanModel(color) {
+  const P = parts();
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.35, clearcoat: 0.8, clearcoatRoughness: 0.2 });
+  const body = new THREE.Mesh(P.bodyGeo, bodyMat);
+  body.position.y = 0.86;
+  body.castShadow = true;
+  g.add(body);
+  const head = new THREE.Group();
+  head.position.y = 1.42;
+  g.add(head);
+  const visor = new THREE.Mesh(P.visorGeo, P.visorMat);
+  visor.position.set(0, 0, -0.3);
+  head.add(visor);
+  const arm = new THREE.Group();
+  arm.position.set(0.32, 1.05, -0.1);
+  arm.add(new THREE.Mesh(P.gripGeo, P.whiteMat));
+  const barrel = new THREE.Mesh(P.barrelGeo, P.glassMat);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.06, -0.3);
+  arm.add(barrel);
+  const ring = new THREE.Mesh(P.ringGeo, P.greenMat);
+  ring.position.set(0, 0.06, -0.52);
+  arm.add(ring);
+  g.add(arm);
+  return { g, head, arm, bodyMat };
+}
+
 export class Avatars {
   constructor(scene) {
     this.scene = scene;
     this.map = new Map();
-    this.bodyGeo = new THREE.CapsuleGeometry(0.36, 1.0, 6, 18);
-    this.visorGeo = new RoundedBoxGeometry(0.46, 0.2, 0.2, 3, 0.08);
-    this.barrelGeo = new THREE.CylinderGeometry(0.075, 0.075, 0.55, 16);
-    this.ringGeo = new THREE.TorusGeometry(0.08, 0.025, 8, 20);
-    this.gripGeo = new RoundedBoxGeometry(0.14, 0.18, 0.3, 2, 0.05);
-    this.visorMat = new THREE.MeshPhysicalMaterial({ color: '#16233d', roughness: 0.15, clearcoat: 1, envMapIntensity: 1.4 });
-    this.whiteMat = new THREE.MeshStandardMaterial({ color: '#f3f6fa', roughness: 0.4 });
-    this.greenMat = new THREE.MeshStandardMaterial({ color: '#33d14f', roughness: 0.35 });
     this.capsules = [];
   }
 
   make(p) {
     const color = PLAYER_COLORS[p.v.c % PLAYER_COLORS.length] || PLAYER_COLORS[0];
-    const g = new THREE.Group();
-    const bodyMat = new THREE.MeshPhysicalMaterial({ color, roughness: 0.35, clearcoat: 0.8, clearcoatRoughness: 0.2 });
-    const body = new THREE.Mesh(this.bodyGeo, bodyMat);
-    body.position.y = 0.86;
-    body.castShadow = true;
-    g.add(body);
-    const head = new THREE.Group();
-    head.position.y = 1.42;
-    g.add(head);
-    const visor = new THREE.Mesh(this.visorGeo, this.visorMat);
-    visor.position.set(0, 0, -0.3);
-    head.add(visor);
-    const arm = new THREE.Group();
-    arm.position.set(0.32, 1.05, -0.1);
-    const grip = new THREE.Mesh(this.gripGeo, this.whiteMat);
-    arm.add(grip);
-    const barrel = new THREE.Mesh(this.barrelGeo, new THREE.MeshPhysicalMaterial({ color: '#7fd3ff', roughness: 0.1, transparent: true, opacity: 0.7 }));
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.06, -0.3);
-    arm.add(barrel);
-    const ring = new THREE.Mesh(this.ringGeo, this.greenMat);
-    ring.position.set(0, 0.06, -0.52);
-    arm.add(ring);
-    g.add(arm);
+    const bean = beanModel(color, this);
+    const g = bean.g;
     const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tagTexture(p.v.n || 'Player', color), depthWrite: false, transparent: true }));
     tag.scale.set(1.6, 0.4, 1);
     tag.position.y = 2.2;
@@ -118,6 +133,7 @@ export class Avatars {
     bubble.renderOrder = 9;
     g.add(bubble);
     this.scene.add(g);
+    const { head, arm, bodyMat } = bean;
     return { g, head, arm, tag, bubble, bodyMat, nick: p.v.n, color: p.v.c, emote: -1, walk: 0, last: new THREE.Vector3(), cap: { a: new THREE.Vector3(), b: new THREE.Vector3(), r: 0.36 } };
   }
 

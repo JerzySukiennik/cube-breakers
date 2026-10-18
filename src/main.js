@@ -24,6 +24,7 @@ import { Pavilion } from './pavilion.js';
 import { shapeFor } from './shapes.js';
 import { Net } from './net.js';
 import { Avatars, PLAYER_COLORS, EMOTES } from './avatars.js';
+import { Menu } from './menu.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -98,7 +99,7 @@ async function boot() {
     const b = document.createElement('button');
     b.style.background = c;
     b.title = 'Colour ' + (i + 1);
-    b.addEventListener('click', () => { profile.color = i; store.set('color', i); paintColors(); if (net) net.setProfile(profile.nick, profile.color); });
+    b.addEventListener('click', () => { profile.color = i; store.set('color', i); paintColors(); if (menuUI) menuUI.setColor(i); audio.play('click'); if (net) net.setProfile(profile.nick, profile.color); });
     colorsEl.appendChild(b);
   });
   const paintColors = () => [...colorsEl.children].forEach((b, i) => b.classList.toggle('sel', i === profile.color));
@@ -112,6 +113,7 @@ async function boot() {
   });
   nickEl.addEventListener('keydown', (e) => e.stopPropagation());
   let net = null;
+  let menuUI = null;
   let emote = -1, emoteT = 0;
   stageP = 0.7; showLoad();
 
@@ -171,24 +173,19 @@ async function boot() {
     player.sens = settings.sens;
     $('fps').classList.toggle('hidden', !settings.fps);
   };
-  const bindRange = (id, key) => {
-    const el = $(id);
-    el.value = settings[key];
-    el.addEventListener('input', () => { settings[key] = parseFloat(el.value); store.set(key, settings[key]); applySettings(); });
-  };
-  bindRange('set-music', 'music');
-  bindRange('set-sfx', 'sfx');
-  bindRange('set-sens', 'sens');
-  const grassEl = $('set-grass');
-  grassEl.value = settings.grass;
   world.setGrass(settings.grass);
-  grassEl.addEventListener('change', () => { settings.grass = grassEl.value; store.set('grass', settings.grass); world.setGrass(settings.grass); });
-  const resEl = $('set-res');
-  resEl.value = String(settings.res);
-  resEl.addEventListener('change', () => { settings.res = parseFloat(resEl.value); store.set('res', settings.res); resize(); });
-  const fpsEl = $('set-fps');
-  fpsEl.checked = settings.fps;
-  fpsEl.addEventListener('change', () => { settings.fps = fpsEl.checked; store.set('fps', settings.fps); applySettings(); });
+  menuUI = new Menu({
+    settings,
+    onClick: () => audio.play('click'),
+    onSetting: (key, v) => {
+      settings[key] = v;
+      store.set(key, v);
+      if (key === 'grass') world.setGrass(v);
+      if (key === 'res') resize();
+      applySettings();
+    },
+  });
+  menuUI.setColor(profile.color);
   applySettings();
 
   function resize() {
@@ -228,8 +225,8 @@ async function boot() {
     if (locked && !started && progress.stats.blocks === 0) {
       hud.showBanner('<b>BREAK THE CUBE!</b><span>Loot drops into your backpack. Recycle it at the Ball Shop behind you.</span>', 5);
     }
-    if (locked) { started = true; playBtn.textContent = 'Resume'; }
-    if (!locked) saveAll();
+    if (locked) { started = true; menuUI.setPaused(true); }
+    if (!locked) { saveAll(); menuUI.show('play'); }
     menu.classList.toggle('hidden', locked);
     hudEl.classList.toggle('dim', !locked);
     hudEl.classList.toggle('hidden', !started);
@@ -251,7 +248,7 @@ async function boot() {
   await audioLoad;
   stageP = 1; showLoad();
 
-  let physAcc = 0, simAcc = 0, simTime = 0, fireCd = 0, saveT = 5, syncT = 0;
+  let physAcc = 0, simAcc = 0, simTime = 0, fireCd = 0, saveT = 5, syncT = 0, menuT = 0, orbit = 0.6;
   const tabData = () => {
     const online = [{ nick: profile.nick, color: PLAYER_COLORS[profile.color], dmg: game.dealt, me: true }];
     if (net) for (const p of net.livePlayers()) online.push({ nick: p.v.n || 'Player', color: PLAYER_COLORS[p.v.c % PLAYER_COLORS.length], dmg: p.v.d || 0 });
@@ -392,7 +389,16 @@ async function boot() {
     if (n === 10) simAcc = 0;
     game.update(dt);
 
-    player.applyCamera(physAcc * PHYS_HZ, dt, fx.shake);
+    if (started) player.applyCamera(physAcc * PHYS_HZ, dt, fx.shake);
+    else {
+      orbit += dt * 0.06;
+      const ht = cube.height || 16;
+      const rad = 24 + ht * 0.55;
+      const ca = Math.cos(orbit), sa = Math.sin(orbit);
+      camera.position.set(sa * rad, ht * 0.5 + 3 + Math.sin(orbit * 0.7) * 1.5, ca * rad);
+      const side = innerWidth > 1080 ? rad * 0.16 : 0;
+      camera.lookAt(-ca * side, ht * 0.42, sa * side);
+    }
     camera.updateMatrixWorld();
     right.set(1, 0, 0).applyQuaternion(camera.quaternion);
     audio.setListener(camera.position, right);
@@ -439,7 +445,18 @@ async function boot() {
     renderer.clear();
     renderer.render(scene, camera);
     renderer.clearDepth();
-    renderer.render(launcher.scene, launcher.camera);
+    if (started) renderer.render(launcher.scene, launcher.camera);
+    const menuOpen = !menu.classList.contains('hidden');
+    if (menuOpen) {
+      menuUI.render(dt, true);
+      menuT -= dt;
+      if (menuT <= 0) {
+        menuT = 0.5;
+        const td = tabData();
+        menuUI.world({ level: game.level, shape: shapeFor(game.level).name, remaining: game.remaining, total: cube.total, online: td.online, top: td.records, offline: !net });
+        menuUI.stats({ gems: progress.gems, blocks: progress.stats.blocks, levels: progress.stats.levels });
+      }
+    }
   }
 
   let last = performance.now();
@@ -467,7 +484,6 @@ async function boot() {
   balls.flushPending();
   fx.clear();
   drops.clear();
-  const statusEl = $('net-status');
   $('load-text').textContent = 'Joining the shared world…';
   try {
     const n = new Net();
@@ -488,17 +504,16 @@ async function boot() {
       shot: (v, age) => game.remoteShot(v, age),
       players: () => {},
       records: () => {},
-      status: (c) => { statusEl.textContent = c ? 'Connected to the shared world' : 'Reconnecting…'; statusEl.classList.toggle('ok', c); },
+      status: (c) => menuUI.setStatus(c ? 'Connected to the shared world' : 'Reconnecting…', c),
     };
     net.attach();
     net.join(profile.nick, profile.color);
-    statusEl.textContent = 'Connected to the shared world';
-    statusEl.classList.add('ok');
+    menuUI.setStatus('Connected to the shared world', true);
     hud.online(1, true, false);
   } catch (e) {
     console.warn('offline mode', e);
     net = null;
-    statusEl.textContent = 'Offline: playing solo with a local save';
+    menuUI.setStatus('Offline: playing solo with a local save', false);
     hud.online(0, false, true);
     let restored = false;
     try {
