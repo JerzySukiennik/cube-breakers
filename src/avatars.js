@@ -193,6 +193,8 @@ export class Avatars {
       a.bubble.visible = show;
       if (show) a.bubble.scale.setScalar(0.9 * sc);
       if (!show) a.emote = -1;
+      a.g.visible = !v.v;
+      if (v.v) continue;
       a.cap.a.set(x, y + 0.36, z);
       a.cap.b.set(x, y + 1.36, z);
       this.capsules.push(a.cap);

@@ -98,11 +98,12 @@ export class Drops {
     return top;
   }
 
-  update(dt, cube, chunks, chest, magnetR, owner) {
+  update(dt, cube, chunks, chest, magnetR, owner, superFn) {
     this.time += dt;
     this.me = owner;
     const list = this.list;
     let w = 0;
+    let budget = superFn ? 3 : 0;
     for (let i = 0; i < list.length; i++) {
       const d = list[i];
       d.age += dt;
@@ -118,7 +119,7 @@ export class Drops {
         list[w++] = d;
         continue;
       }
-      if (d.state !== 2 && d.age > 0.4 && d.pos.distanceToSquared(chest) < magnetR * magnetR) {
+      if (d.state < 2 && d.age > 0.4 && (d.pos.distanceToSquared(chest) < magnetR * magnetR || (budget > 0 && superFn(d.pos) && budget--))) {
         d.state = 2;
         if (this.claim && d.id && d.claim === 0) {
           d.claim = 1;
@@ -212,8 +213,10 @@ export class Drops {
       tm.toArray(m, n * 16);
       col[n * 3] = d.info.r; col[n * 3 + 1] = d.info.g; col[n * 3 + 2] = d.info.b;
       pat[n] = d.info.pattern;
-      fx[n * 3] = d.state === 1 ? 0.16 + 0.1 * Math.sin(this.time * 4 + d.yaw) : 0.1;
-      fx[n * 3 + 1] = 0;
+      fx[n * 4] = d.state === 1 ? 0.16 + 0.1 * Math.sin(this.time * 4 + d.yaw) : 0.1;
+      fx[n * 4 + 1] = 0;
+      fx[n * 4 + 2] = 0;
+      fx[n * 4 + 3] = 0;
       n++;
     }
     this.mesh.count = n;
@@ -221,7 +224,7 @@ export class Drops {
       this.mesh.instanceMatrix.addUpdateRange(0, n * 16);
       this.mesh.instanceColor.addUpdateRange(0, n * 3);
       this.patternAttr.addUpdateRange(0, n);
-      this.fxAttr.addUpdateRange(0, n * 3);
+      this.fxAttr.addUpdateRange(0, n * 4);
       this.mesh.instanceMatrix.needsUpdate = true;
       this.mesh.instanceColor.needsUpdate = true;
       this.patternAttr.needsUpdate = true;

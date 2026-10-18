@@ -1,4 +1,4 @@
-// Cube Breakers: the block grid (state, contacts, detachment) and its instanced view.
+// Cube Breakers: the block grid (state, contacts, detachment, voxel raycast) and its instanced view.
 
 import * as THREE from 'three';
 import { N, HALF, SIZE, KIND, LAYERS, SPECIAL } from './config.js';
@@ -23,6 +23,7 @@ export class Cube {
     this.maxHp = new Float32Array(SIZE);
     this.color = new Float32Array(SIZE * 3);
     this.frozen = new Float32Array(SIZE);
+    this.poison = new Float32Array(SIZE);
     this.pattern = new Uint8Array(SIZE);
     this.count = 0;
     this.total = 0;
@@ -113,6 +114,7 @@ export class Cube {
       this.color[i * 3 + 1] = tmpColor.g;
       this.color[i * 3 + 2] = tmpColor.b;
       this.frozen[i] = 0;
+      this.poison[i] = 0;
       this.count++;
     }
     this.total = this.count;
@@ -135,7 +137,7 @@ export class Cube {
     const b = {
       gx: i % N, gy: (i / NN) | 0, gz: ((i / N) | 0) % N,
       kind: this.kind[i], layer: this.layer[i], hp: this.hp[i], maxHp: this.maxHp[i],
-      pattern: this.pattern[i], frozen: this.frozen[i],
+      pattern: this.pattern[i], frozen: this.frozen[i], poison: this.poison[i],
       r: this.color[i * 3], g: this.color[i * 3 + 1], b: this.color[i * 3 + 2],
     };
     this.kind[i] = KIND.EMPTY;
@@ -181,6 +183,29 @@ export class Cube {
       if (n >= out.length) return n;
     }
     return n;
+  }
+
+  raycastCell(o, d, maxT) {
+    let x = Math.floor(o.x + HALF), y = Math.floor(o.y), z = Math.floor(o.z + HALF);
+    const sx = d.x > 0 ? 1 : -1, sy = d.y > 0 ? 1 : -1, sz = d.z > 0 ? 1 : -1;
+    const inv = (v) => (Math.abs(v) < 1e-9 ? 1e9 : 1 / Math.abs(v));
+    const dx = inv(d.x), dy = inv(d.y), dz = inv(d.z);
+    const fx = o.x + HALF - x, fy = o.y - y, fz = o.z + HALF - z;
+    let tx = (d.x > 0 ? 1 - fx : fx) * dx, ty = (d.y > 0 ? 1 - fy : fy) * dy, tz = (d.z > 0 ? 1 - fz : fz) * dz;
+    let t = 0;
+    for (let k = 0; k < 400 && t <= maxT; k++) {
+      if (x >= 0 && y >= 0 && z >= 0 && x < N && y < N && z < N) {
+        const i = x + z * N + y * NN;
+        if (this.kind[i] !== KIND.EMPTY) return i;
+      } else if ((sx > 0 && x >= N) || (sx < 0 && x < 0) || (sy > 0 && y >= N) || (sz > 0 && z >= N) || (sz < 0 && z < 0)) {
+        if (t > 0) return -1;
+      }
+      if (tx < ty && tx < tz) { x += sx; t = tx; tx += dx; }
+      else if (ty < tz) { y += sy; t = ty; ty += dy; }
+      else { z += sz; t = tz; tz += dz; }
+      if (y < 0) return -1;
+    }
+    return -1;
   }
 
   findDetached() {
@@ -282,15 +307,14 @@ export class CubeView {
       col[slot * 3 + 1] = c.color[i * 3 + 1];
       col[slot * 3 + 2] = c.color[i * 3 + 2];
       pat[slot] = c.pattern[i];
-      fx[slot * 3] = this.flash[i];
-      fx[slot * 3 + 1] = c.frozen[i] > time ? Math.min(1, (c.frozen[i] - time) * 2) : 0;
-      fx[slot * 3 + 2] = 0;
+      this.writeFx(fx, slot, i, time);
+      if (c.poison[i] > time) this.active.add(i);
     }
     this.mesh.count = n;
     upload(this.mesh.instanceMatrix, 0, n * 16);
     upload(this.mesh.instanceColor, 0, n * 3);
     upload(this.patternAttr, 0, n);
-    upload(this.fxAttr, 0, n * 3);
+    upload(this.fxAttr, 0, n * 4);
     this.rebuildBacking();
     c.dirty = false;
   }
@@ -331,6 +355,17 @@ export class CubeView {
     upload(this.back.instanceColor, 0, k * 3);
   }
 
+  writeFx(fx, slot, i, time) {
+    const c = this.cube;
+    const o = slot * 4;
+    fx[o] = this.flash[i];
+    fx[o + 1] = c.frozen[i] > time ? Math.min(1, (c.frozen[i] - time) * 2) : 0;
+    fx[o + 2] = c.maxHp[i] > 0 ? Math.max(0, 1 - c.hp[i] / c.maxHp[i]) : 0;
+    fx[o + 3] = c.poison[i] > time ? Math.min(1, (c.poison[i] - time) * 2) : 0;
+  }
+
+  touch(i) { this.active.add(i); }
+
   hit(i, strength) {
     this.flash[i] = Math.min(1, this.flash[i] + 0.55 * strength);
     this.wob[i] = Math.min(this.wob[i], 1 - 0.07 * Math.min(1.5, strength));
@@ -350,21 +385,20 @@ export class CubeView {
       this.flash[i] = f < 0.01 ? 0 : f;
       const w = this.wob[i] + (1 - this.wob[i]) * Math.min(1, dt * 14);
       this.wob[i] = w > 0.998 ? 1 : w;
-      const frozen = c.frozen[i] > time;
+      const lasting = c.frozen[i] > time || c.poison[i] > time;
       const slot = this.slotOf[i];
-      if (c.kind[i] === KIND.EMPTY || (this.flash[i] === 0 && this.wob[i] === 1 && !frozen)) {
+      if (c.kind[i] === KIND.EMPTY || (this.flash[i] === 0 && this.wob[i] === 1 && !lasting)) {
         this.active.delete(i);
         this.flash[i] = 0; this.wob[i] = 1;
       }
       if (slot < 0) continue;
-      fx[slot * 3] = this.flash[i];
-      fx[slot * 3 + 1] = frozen ? Math.min(1, (c.frozen[i] - time) * 2) : 0;
+      this.writeFx(fx, slot, i, time);
       this.writeMatrix(slot, i, this.wob[i]);
       if (slot < lo) lo = slot;
       if (slot > hi) hi = slot;
     }
     if (hi >= 0) {
-      upload(this.fxAttr, lo * 3, (hi - lo + 1) * 3);
+      upload(this.fxAttr, lo * 4, (hi - lo + 1) * 4);
       upload(this.mesh.instanceMatrix, lo * 16, (hi - lo + 1) * 16);
     }
   }

@@ -1,4 +1,4 @@
-// Cube Breakers: zero-gravity constant-speed balls that bounce forever (blocks, chunks, ground, dome, players, each other).
+// Cube Breakers: zero-gravity constant-speed balls that bounce forever (blocks, chunks, ground, dome, players, each other), plus the special ball behaviours.
 
 import * as THREE from 'three';
 import { DOME_R, BASE_SPEED } from './config.js';
@@ -23,13 +23,19 @@ export class Balls {
       emissive: '#ffffff', emissiveIntensity: 0.06, envMapIntensity: 1.2,
     }), CAP);
     this.gold = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: '#ffc531', metalness: 1, roughness: 0.16, envMapIntensity: 1.4 }), 256);
-    for (const m of [this.gloss, this.gold]) {
+    this.ghost = new THREE.InstancedMesh(geo, new THREE.MeshPhysicalMaterial({
+      color: '#eef8ff', roughness: 0.05, clearcoat: 1, transparent: true, opacity: 0.42, depthWrite: false,
+      emissive: '#cfeaff', emissiveIntensity: 0.55,
+    }), 128);
+    this.ghost.renderOrder = 3;
+    for (const m of [this.gloss, this.gold, this.ghost]) {
       m.castShadow = true;
       m.frustumCulled = false;
       m.count = 0;
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       scene.add(m);
     }
+    this.ghost.castShadow = false;
     this.gloss.setColorAt(0, tcol.set('#fff'));
     this.gloss.instanceColor.setUsage(THREE.DynamicDrawUsage);
   }
@@ -37,8 +43,8 @@ export class Balls {
   spawn(cfg, pos, dir, owner, time, mods) {
     const dmgMul = mods ? mods.dmg : 1;
     const b = {
-      id: this.nextId++, cfg, owner, born: time, alive: true,
-      pos: pos.clone(), dir: dir.clone().normalize(), dmgMul,
+      id: this.nextId++, cfg, owner, born: time, alive: true, life: (mods && mods.life) || cfg.life || 0,
+      pos: pos.clone(), dir: dir.clone().normalize(), dmgMul, start: pos.clone(), bounces: 0, inside: 0,
       speed: BASE_SPEED * cfg.speed * (mods ? mods.speed : 1), r: cfg.radius, dmg: cfg.damage * dmgMul, m: cfg.radius ** 3,
       color: new THREE.Color(cfg.color),
       pierce: cfg.pierce || 0, pierceSet: new Set(),
@@ -79,13 +85,14 @@ export class Balls {
     const ctx = this.ctx;
     for (const b of this.list) {
       if (!b.alive) continue;
+      if (b.life && time - b.born > b.life) { ctx.expire(b); continue; }
       if (b.cfg.homing) this.steer(b, h);
       const dist = b.speed * h;
       const n = Math.max(1, Math.ceil(dist / (b.r * 0.55)));
       const s = dist / n;
       for (let k = 0; k < n && b.alive; k++) {
         b.pos.addScaledVector(b.dir, s);
-        this.collide(b, time);
+        this.collide(b, time, s);
       }
     }
     this.ballBall();
@@ -121,7 +128,7 @@ export class Balls {
     }
   }
 
-  collide(b, time) {
+  collide(b, time, step = 0.1) {
     const ctx = this.ctx;
     const p = b.pos, r = b.r, d = b.dir;
     if (p.y < r) {
@@ -140,7 +147,18 @@ export class Balls {
     }
     let nc = ctx.cube.sphereContacts(p, r, C, 0);
     nc = ctx.chunks.sphereContacts(p, r, C, nc);
-    if (nc > 0) this.resolveBlocks(b, nc, time);
+    if (b.cfg.ghost) {
+      if (nc > 0) {
+        const g = b.cfg.ghost;
+        for (let k = 0; k < nc; k++) {
+          const c = C[k];
+          const layer = c.i >= 0 ? ctx.cube.layer[c.i] : c.block.layer;
+          if (layer >= g.layer) { ctx.ghostBurst(b, tv.set(c.px, c.py, c.pz)); return; }
+        }
+        b.inside += step;
+        if (b.inside > 3.5) { ctx.ghostBurst(b, tv.copy(p)); return; }
+      } else if (b.inside > 0.9) { ctx.ghostBurst(b, tv.copy(p)); return; }
+    } else if (nc > 0) this.resolveBlocks(b, nc, time);
     else if (b.cfg.pierce && b.pierce < b.cfg.pierce && b.pierceSet.size) this.refill(b);
     if (!b.alive) return;
     const obs = ctx.obstacles;
@@ -206,13 +224,20 @@ export class Balls {
       const n = Math.max(1, Math.ceil(dist / (b.r * 0.55)));
       for (let j = 0; j < n && b.alive; j++) {
         b.pos.addScaledVector(b.dir, dist / n);
-        this.collide(b, time);
+        this.collide(b, time, dist / n);
       }
     }
   }
 
   resolveBlocks(b, nc, time) {
     const ctx = this.ctx;
+    if (b.cfg.sniper || b.cfg.hole) {
+      let deep = C[0];
+      for (let k = 1; k < nc; k++) if (C[k].depth > deep.depth) deep = C[k];
+      if (b.cfg.sniper) ctx.sniperHit(b, deep, time);
+      else ctx.blackHole(b, tv.set(deep.px, deep.py, deep.pz));
+      return;
+    }
     if (b.cfg.pierce) {
       if (b.pierce > 0) {
         for (let k = 0; k < nc; k++) {
@@ -246,10 +271,12 @@ export class Balls {
     const push = Math.min(deep.depth, b.r * 1.5) + 0.001;
     b.pos.x += nx * push; b.pos.y += ny * push; b.pos.z += nz * push;
     const dn = b.dir.x * nx + b.dir.y * ny + b.dir.z * nz;
+    let bounced = false;
     if (dn < 0) {
       b.dir.x -= 2 * dn * nx; b.dir.y -= 2 * dn * ny; b.dir.z -= 2 * dn * nz;
       b.dir.normalize();
       b.homeCd = 0.18;
+      bounced = true;
     }
     if (deep.depth > b.r * 0.95) {
       if (++b.deepFrames > 90) { ctx.pop(b); return; }
@@ -267,6 +294,7 @@ export class Balls {
       b.split = true;
       ctx.split(b, tv.set(nx, ny, nz));
     }
+    if (b.cfg.firework && bounced && b.alive && ++b.bounces >= b.cfg.firework.bounces) ctx.firework(b, tv.set(nx, ny, nz));
   }
 
   tryHit(b, c, time) {
@@ -365,24 +393,34 @@ export class Balls {
     }
   }
 
-  render() {
+  render(time = 0) {
     const gm = this.gloss.instanceMatrix.array;
     const gc = this.gloss.instanceColor.array;
     const om = this.gold.instanceMatrix.array;
-    let g = 0, o = 0;
+    const hm = this.ghost.instanceMatrix.array;
+    let g = 0, o = 0, h = 0;
     for (const b of this.list) {
       if (!b.alive) continue;
       let arr, off;
+      let s = b.r;
       if (b.cfg.gold) {
         if (o >= 256) continue;
         arr = om; off = o * 16; o++;
+      } else if (b.cfg.ghost) {
+        if (h >= 128) continue;
+        arr = hm; off = h * 16; h++;
+        s *= 1 + 0.08 * Math.sin(time * 9 + b.id);
       } else {
         if (g >= CAP) continue;
         arr = gm; off = g * 16;
-        gc[g * 3] = b.color.r; gc[g * 3 + 1] = b.color.g; gc[g * 3 + 2] = b.color.b;
+        if (b.cfg.firework || b.cfg.id === 'spark') {
+          tcol.setHSL((time * 0.7 + b.id * 0.137) % 1, 0.95, 0.6);
+          gc[g * 3] = tcol.r; gc[g * 3 + 1] = tcol.g; gc[g * 3 + 2] = tcol.b;
+        } else {
+          gc[g * 3] = b.color.r; gc[g * 3 + 1] = b.color.g; gc[g * 3 + 2] = b.color.b;
+        }
         g++;
       }
-      const s = b.r;
       arr[off] = s; arr[off + 1] = 0; arr[off + 2] = 0; arr[off + 3] = 0;
       arr[off + 4] = 0; arr[off + 5] = s; arr[off + 6] = 0; arr[off + 7] = 0;
       arr[off + 8] = 0; arr[off + 9] = 0; arr[off + 10] = s; arr[off + 11] = 0;
@@ -390,8 +428,10 @@ export class Balls {
     }
     this.gloss.count = g;
     this.gold.count = o;
+    this.ghost.count = h;
     this.gloss.instanceMatrix.needsUpdate = true;
     this.gloss.instanceColor.needsUpdate = true;
     this.gold.instanceMatrix.needsUpdate = true;
+    this.ghost.instanceMatrix.needsUpdate = true;
   }
 }

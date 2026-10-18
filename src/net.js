@@ -1,4 +1,4 @@
-// Cube Breakers: Firebase RTDB sync (anonymous auth, players, shared block damage, shared loot, team pool, chunk authority, shots).
+// Cube Breakers: Firebase RTDB sync (anonymous auth, players, shared block damage, shared loot, team pool with powerups, tray orders and turrets, the drill, chunk authority, shots).
 
 import { firebaseConfig } from './firebase-config.js';
 
@@ -9,7 +9,7 @@ const SEND = 0.1;
 const STALE_MS = 12000;
 
 export function defaultTeam() {
-  return { gems: 0, up: {}, ammo: { 0: 40 }, stats: { blocks: 0, levels: 0, gems: 0 } };
+  return { gems: 0, up: {}, ammo: { 0: 40 }, stats: { blocks: 0, levels: 0, gems: 0 }, pw: {}, fx: {}, ev: {}, tray: {}, turrets: {} };
 }
 
 export class Net {
@@ -46,6 +46,8 @@ export class Net {
     this.shotKeys = [];
     this.me = null;
     this.sentChunks = new Set();
+    this.drill = null;
+    this.turretPend = new Map();
   }
 
   now() { return Date.now() + this.offset; }
@@ -101,7 +103,10 @@ export class Net {
   normTeam(t) {
     const d = defaultTeam();
     if (!t) return d;
-    return { gems: t.gems || 0, up: t.up || {}, ammo: t.ammo || {}, stats: Object.assign(d.stats, t.stats || {}), last: t.last || null };
+    return {
+      gems: t.gems || 0, up: t.up || {}, ammo: t.ammo || {}, stats: Object.assign(d.stats, t.stats || {}), last: t.last || null,
+      pw: t.pw || {}, fx: t.fx || {}, ev: t.ev || {}, tray: t.tray || {}, turrets: t.turrets || {},
+    };
   }
 
   ingest(data) {
@@ -127,6 +132,10 @@ export class Net {
       const prev = this.team;
       this.team = this.normTeam(s.val());
       if (this.cb.team) this.cb.team(this.team, prev);
+    }));
+    this.unsubs.push(onValue(this.r(`${ROOT}/drill`), (s) => {
+      this.drill = s.val();
+      if (this.cb.drill) this.cb.drill(this.drill);
     }));
     this.attachEpoch();
     const pr = this.r(`${ROOT}/players`);
@@ -324,6 +333,56 @@ export class Net {
     this.fb.update(this.r(''), { [`${ROOT}/team/ammo/${t}`]: this.fb.increment(n) }).catch(() => {});
   }
 
+  addPw(id, n) {
+    this.fb.update(this.r(''), { [`${ROOT}/team/pw/${id}`]: this.fb.increment(n) }).catch(() => {});
+  }
+
+  async claimTray(oid, k) {
+    try {
+      const res = await this.fb.runTransaction(this.r(`${ROOT}/team/tray/${oid}/c/${k}`), (cur) => (cur ? undefined : this.uid));
+      return !!(res.committed && res.snapshot.val() === this.uid);
+    } catch { return false; }
+  }
+
+  removeOrder(oid) {
+    this.fb.set(this.r(`${ROOT}/team/tray/${oid}`), null).catch(() => {});
+  }
+
+  turretUse(id, n) {
+    this.turretPend.set(id, (this.turretPend.get(id) || 0) + n);
+  }
+
+  flushTurrets() {
+    if (!this.turretPend.size) return;
+    const u = {};
+    for (const [id, n] of this.turretPend) u[`${ROOT}/team/turrets/${id}/n`] = this.fb.increment(-n);
+    this.turretPend.clear();
+    this.fb.update(this.r(''), u).catch(() => {});
+  }
+
+  async claimDrill(state) {
+    try {
+      const now = this.now();
+      const res = await this.fb.runTransaction(this.r(`${ROOT}/drill`), (cur) => {
+        const c = cur || {};
+        if (c.d && c.d !== this.uid && now - (c.t || 0) < 6000) return undefined;
+        return { ...c, ...state, d: this.uid, n: this.me ? this.me.n : 'Someone', t: now };
+      });
+      const ok = !!(res.committed && res.snapshot.val() && res.snapshot.val().d === this.uid);
+      if (ok) this.fb.onDisconnect(this.r(`${ROOT}/drill/d`)).remove().catch(() => {});
+      return ok;
+    } catch { return false; }
+  }
+
+  sendDrill(state) {
+    this.fb.update(this.r(`${ROOT}/drill`), { ...state, d: this.uid, t: this.now() }).catch(() => {});
+  }
+
+  releaseDrill(state) {
+    this.fb.onDisconnect(this.r(`${ROOT}/drill/d`)).cancel().catch(() => {});
+    this.fb.update(this.r(`${ROOT}/drill`), { ...state, d: null, t: this.now() }).catch(() => {});
+  }
+
   countBlocks(n) { this.statsPend.blocks += n; }
   countLevel() { this.statsPend.levels += 1; }
 
@@ -353,14 +412,14 @@ export class Net {
     this.fb.set(this.r(`${ROOT}/players/${this.uid}`), {
       n: this.me.n, c: this.me.c, j: this.joinedAt,
       p: [+st.x.toFixed(2), +st.y.toFixed(2), +st.z.toFixed(2)],
-      y: +st.yaw.toFixed(3), a: +st.pitch.toFixed(3), b: st.ball, e: st.emote, et: st.emoteT,
+      y: +st.yaw.toFixed(3), a: +st.pitch.toFixed(3), b: st.ball, e: st.emote, et: st.emoteT, v: st.drive ? 1 : 0,
     }).catch(() => {});
   }
 
   shot(rec) {
     const { push, set, serverTimestamp } = this.fb;
     const ref = push(this.r(`${ROOT}/shots`));
-    set(ref, { o: this.uid, t: rec.t, p: rec.p, d: rec.d, s: rec.s, m: rec.m, ts: serverTimestamp() }).catch(() => {});
+    set(ref, { o: this.uid, t: rec.t, p: rec.p, d: rec.d, s: rec.s, m: rec.m, k: rec.k || 1, ts: serverTimestamp() }).catch(() => {});
     this.shotKeys.push({ k: ref.key, at: performance.now() });
   }
 
@@ -388,6 +447,8 @@ export class Net {
     if (!this.online) return;
     this.flushT -= dt;
     if (this.flushT <= 0) { this.flushT = FLUSH; this.flush(); }
+    this.turretT = (this.turretT || 0) - dt;
+    if (this.turretT <= 0) { this.turretT = 0.5; this.flushTurrets(); }
     this.sendT -= dt;
     if (this.sendT <= 0 && playerState && this.connected) { this.sendT = SEND; this.sendPlayer(playerState()); }
     this.statsT -= dt;

@@ -326,8 +326,11 @@ export class Chunks {
     tm.compose(tv, ch.q, ts);
     tm.toArray(this.mesh.instanceMatrix.array, slot * 16);
     const fx = this.fxAttr.array;
-    fx[slot * 3] = b.flash;
-    fx[slot * 3 + 1] = b.frozen > time ? Math.min(1, (b.frozen - time) * 2) : 0;
+    const o = slot * 4;
+    fx[o] = b.flash;
+    fx[o + 1] = b.frozen > time ? Math.min(1, (b.frozen - time) * 2) : 0;
+    fx[o + 2] = b.maxHp > 0 ? Math.max(0, 1 - b.hp / b.maxHp) : 0;
+    fx[o + 3] = b.poison > time ? Math.min(1, (b.poison - time) * 2) : 0;
   }
 
   update(dt, time) {
@@ -359,8 +362,8 @@ export class Chunks {
         if (b.flash < 0.01) b.flash = 0;
         b.wob += (1 - b.wob) * Math.min(1, dt * 14);
         if (b.wob > 0.998) b.wob = 1;
-        const frozen = b.frozen > time;
-        if (!b.alive || (b.flash === 0 && b.wob === 1 && !frozen)) this.active.delete(b);
+        const lasting = b.frozen > time || b.poison > time;
+        if (!b.alive || (b.flash === 0 && b.wob === 1 && !lasting)) this.active.delete(b);
         if (b.alive && b.slot >= 0) { this.writeBlock(b.chunkRef, b, b.slot, time); any = true; }
       }
       if (any) {

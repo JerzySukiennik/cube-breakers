@@ -12,6 +12,9 @@ const TINTS = {
   ice: new THREE.Color('#c4f1ff'),
   gold: new THREE.Color('#ffd84a'),
   boom: new THREE.Color('#fff0b0'),
+  crit: new THREE.Color('#ffb02e'),
+  tox: new THREE.Color('#9dff7a'),
+  hole: new THREE.Color('#d9b8ff'),
 };
 
 function buildAtlas() {
@@ -107,7 +110,8 @@ export class Numbers {
     n.pos.set(p.x + (Math.random() - 0.5) * 0.3, p.y + (Math.random() - 0.5) * 0.2, p.z + (Math.random() - 0.5) * 0.3);
     n.vy = 1.3 + Math.random() * 0.5;
     n.max = n.life = 0.85;
-    n.scale = value >= 1000 ? 1.45 : value >= 100 ? 1.2 : 1;
+    n.scale = (value >= 1000 ? 1.45 : value >= 100 ? 1.2 : 1) * (style === 'crit' ? 1.45 : 1);
+    if (style === 'crit') { n.vy += 0.8; n.max = n.life = 1.05; }
     n.text = value >= 10000 ? (value / 1000).toFixed(1) + 'k' : String(Math.round(value));
     n.tint = TINTS[style || ''] || TINTS[''];
   }

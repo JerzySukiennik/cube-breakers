@@ -139,12 +139,12 @@ function makeTerrain() {
 
 function makeGrassMaterial() {
   const mat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
-  const uniforms = { uTime: { value: 0 }, uPlayer: { value: new THREE.Vector3(0, -99, 0) }, uTile: { value: GRASS_TILE }, uMaxR: { value: GRASS_R }, uHole: { value: new THREE.Vector4(-12, 51.8, 12, 68.2) } };
+  const uniforms = { uTime: { value: 0 }, uPlayer: { value: new THREE.Vector3(0, -99, 0) }, uTile: { value: GRASS_TILE }, uMaxR: { value: GRASS_R }, uHoles: { value: [new THREE.Vector4(-12, 51.8, 12, 68.2), new THREE.Vector4(-3.4, 35.5, 3.4, 45.4), new THREE.Vector4(-21.4, 50.6, -14.6, 59.4)] } };
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
-        uniform float uTime; uniform vec3 uPlayer; uniform float uTile; uniform float uMaxR; uniform vec4 uHole;
+        uniform float uTime; uniform vec3 uPlayer; uniform float uTile; uniform float uMaxR; uniform vec4 uHoles[3];
         attribute vec4 aOff; attribute float aTint;
         varying float vH; varying float vTint;`)
       .replace('#include <beginnormal_vertex>', `vec3 objectNormal = vec3(0.0, 1.0, 0.0);
@@ -161,7 +161,10 @@ function makeGrassMaterial() {
         float alive = step(hsh, keep);
         float fade = (1.0 - smoothstep(uTile * 0.5 - 9.0, uTile * 0.5 - 1.0, camD)) * (1.0 - smoothstep(uMaxR - 4.0, uMaxR, length(wp)));
         alive *= step(0.02, fade);
-        alive *= 1.0 - step(uHole.x, wp.x) * step(wp.x, uHole.z) * step(uHole.y, wp.y) * step(wp.y, uHole.w);
+        for (int h = 0; h < 3; h++) {
+          vec4 hb = uHoles[h];
+          alive *= 1.0 - step(hb.x, wp.x) * step(wp.x, hb.z) * step(hb.y, wp.y) * step(wp.y, hb.w);
+        }
         transformed.x *= alive * (1.0 + (1.0 - keep) * 1.5);
         transformed.y *= bh * alive * fade;
         float ca = cos(aOff.w), sa = sin(aOff.w);

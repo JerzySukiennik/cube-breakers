@@ -1,9 +1,10 @@
-// Cube Breakers: the white ball-shop pavilion with pack jars, upgrade screens, a free dispenser and a recycle bin.
+// Cube Breakers: the white upgrades pavilion with upgrade screens, the Auto-Shooter stand, a free dispenser and a recycle bin.
 
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { BALL_TYPES } from './config.js';
-import { PACKS, UPGRADES } from './progress.js';
+import { TURRET } from './config.js';
+import { UPGRADES } from './progress.js';
+import { turretModel } from './turrets.js';
 
 export const SHOP_POS = new THREE.Vector3(0, 0, 60);
 const FLOOR = 0.26;
@@ -129,17 +130,12 @@ export class Pavilion {
       this.ballBox(x - 0.32, 0, z - 0.32, x + 0.32, 5.2, z + 0.32);
     }
 
-    this.box(17, 1.0, 1.3, 0, FLOOR + 0.5, 1.5, white, 0.08, true);
-    this.box(17.4, 0.1, 1.6, 0, FLOOR + 1.05, 1.5, blue, 0.04, false);
-    this.collider(8.7, 0.55, 0.8, 0, FLOOR + 0.55, 1.5);
-    this.ballBox(-8.7, 0, 0.7, 8.7, FLOOR + 1.1, 2.3);
-
     this.box(21, 0.9, 1.1, 0, FLOOR + 0.45, 5.6, white, 0.08, true);
     this.box(21.4, 0.1, 1.4, 0, FLOOR + 0.95, 5.6, blue, 0.04, false);
     this.collider(10.7, 0.5, 0.7, 0, FLOOR + 0.5, 5.6);
     this.ballBox(-10.7, 0, 4.9, 10.7, FLOOR + 1.0, 6.3);
 
-    this.buildJars();
+    this.buildTurretStand();
     this.buildStations();
     this.buildDispenser();
     this.buildBin();
@@ -169,39 +165,36 @@ export class Pavilion {
 
   world(x, y, z) { return new THREE.Vector3(x, y, z).add(SHOP_POS); }
 
-  buildJars() {
-    const glassGeo = new RoundedBoxGeometry(0.8, 0.86, 0.8, 3, 0.12);
-    const capGeo = new RoundedBoxGeometry(0.86, 0.13, 0.86, 3, 0.06);
-    const balls = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 18, 12), new THREE.MeshPhysicalMaterial({ color: '#fff', roughness: 0.1, clearcoat: 1, envMapIntensity: 1.2 }), PACKS.length * 6);
-    balls.castShadow = true;
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const s = new THREE.Vector3();
-    const v = new THREE.Vector3();
-    const c = new THREE.Color();
-    let k = 0;
-    PACKS.forEach((pk, i) => {
-      const t = BALL_TYPES[pk.type];
-      const x = -7.35 + i * 2.1;
-      const g = new THREE.Group();
-      g.position.set(x, FLOOR + 1.1, 1.5);
-      const capMat = new THREE.MeshPhysicalMaterial({ color: t.color, roughness: 0.25, clearcoat: 1, metalness: t.gold ? 0.8 : 0 });
-      const base = new THREE.Mesh(capGeo, capMat); base.position.y = 0.07; g.add(base);
-      const lid = new THREE.Mesh(capGeo, capMat); lid.position.y = 0.98; g.add(lid);
-      const jar = new THREE.Mesh(glassGeo, this.mats.glass); jar.position.y = 0.53; jar.renderOrder = 2; g.add(jar);
-      this.group.add(g);
-      const r = t.mega ? 0.2 : 0.15;
-      const spots = t.mega ? [[0, 0.36, 0], [0, 0.72, 0]] : [[-0.16, 0.3, -0.16], [0.16, 0.3, -0.12], [-0.12, 0.3, 0.16], [0.16, 0.3, 0.16], [0, 0.6, 0], [0.12, 0.72, -0.08]];
-      for (const sp of spots) {
-        m.compose(v.set(x + sp[0], FLOOR + 1.1 + sp[1], 1.5 + sp[2]), q, s.setScalar(r));
-        balls.setMatrixAt(k, m);
-        balls.setColorAt(k, c.set(t.color));
-        k++;
-      }
-      this.items.push({ kind: 'pack', idx: i, node: g, pos: this.world(x, FLOOR + 1.6, 1.5), r: 0.75 });
+  buildTurretStand() {
+    const g = new THREE.Group();
+    g.position.set(0, FLOOR, 0.6);
+    const podium = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.35, 0.35, 40), this.mats.white);
+    podium.position.y = 0.175;
+    podium.castShadow = podium.receiveShadow = true;
+    g.add(podium);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(1.3, 0.06, 10, 48), this.mats.blue);
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = 0.35;
+    g.add(rim);
+    const model = turretModel(null);
+    model.g.position.y = 0.35;
+    model.g.rotation.y = Math.PI;
+    model.pitch.rotation.x = 0.25;
+    g.add(model.g);
+    this.standModel = model;
+    const tex = canvasTex(640, 200, (ctx) => {
+      ctx.fillStyle = '#1f6fd6'; roundRect(ctx, 6, 6, 628, 188, 60); ctx.fill();
+      ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center';
+      ctx.font = "italic 900 72px Nunito, sans-serif"; ctx.fillText('AUTO-SHOOTER', 320, 96);
+      ctx.font = "800 44px Nunito, sans-serif"; ctx.fillText('◇ ' + TURRET.price.toLocaleString('en-US') + ' · place it anywhere', 320, 160);
     });
-    balls.count = k;
-    this.group.add(balls);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.81), new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false }));
+    sign.position.set(0, 3.25, 0);
+    sign.rotation.y = Math.PI;
+    g.add(sign);
+    this.group.add(g);
+    this.collider(1.3, 0.2, 1.3, 0, FLOOR + 0.2, 0.6);
+    this.items.push({ kind: 'turretbuy', node: g, pos: this.world(0, FLOOR + 1.6, 0.6), r: 1.2 });
   }
 
   stationTexture(st, progress) {
@@ -277,6 +270,9 @@ export class Pavilion {
   }
 
   refresh(progress) {
+    const key = progress.gems + '|' + JSON.stringify(progress.up);
+    if (key === this.refreshKey) return;
+    this.refreshKey = key;
     for (const st of this.stations) this.stationTexture(st, progress);
   }
 
@@ -358,7 +354,7 @@ export class Pavilion {
       ctx.fillStyle = '#ffffff';
       ctx.font = "italic 900 104px Nunito, sans-serif";
       ctx.textAlign = 'center';
-      ctx.fillText('BALL SHOP', 512, 118);
+      ctx.fillText('UPGRADES', 512, 118);
     });
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 1.4), new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false }));
     sign.position.set(0, 6.45, -6.5);
@@ -382,6 +378,10 @@ export class Pavilion {
 
   update(dt, hover) {
     this.time += dt;
+    if (this.standModel) {
+      this.standModel.yaw.rotation.y = Math.sin(this.time * 0.8) * 0.8;
+      this.standModel.pitch.rotation.x = 0.2 + Math.sin(this.time * 1.3) * 0.12;
+    }
     for (const it of this.items) {
       const target = it === hover ? 1.07 : 1;
       const s = it.node.scale.x + (target - it.node.scale.x) * Math.min(1, dt * 12);

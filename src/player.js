@@ -176,7 +176,19 @@ export class Player {
     this.capsule.b.set(this.feet.x, this.feet.y + RAD + HALF_H * 2, this.feet.z);
   }
 
-  applyCamera(alpha, dt, shake) {
+  ride(x, y, z) {
+    this.prevFeet.copy(this.feet);
+    this.feet.set(x, y, z);
+    this.renderFeet.copy(this.feet);
+    this.body.setNextKinematicTranslation({ x, y: y + HALF_H + RAD, z });
+    this.vel.set(0, 0, 0);
+    this.ext.set(0, 0, 0);
+    this.vy = 0;
+    this.speedNow = 0;
+    this.updateCapsule();
+  }
+
+  applyCamera(alpha, dt, shake, recoil = 0) {
     this.renderFeet.lerpVectors(this.prevFeet, this.feet, alpha);
     const moving = this.grounded && this.speedNow > 1;
     this.bobAmp += ((moving ? Math.min(1, this.speedNow / 8) : 0) - this.bobAmp) * Math.min(1, dt * 8);
@@ -186,7 +198,7 @@ export class Player {
     const cam = this.camera;
     cam.position.set(this.renderFeet.x, this.renderFeet.y + EYE + bob, this.renderFeet.z);
     cam.rotation.order = 'YXZ';
-    cam.rotation.set(this.pitch + shake.y * 0.6, this.yaw + shake.x * 0.6, sway * 0.4 + shake.z);
+    cam.rotation.set(this.pitch + shake.y * 0.6 + recoil * 0.035, this.yaw + shake.x * 0.6, sway * 0.4 + shake.z);
     cam.position.x += shake.x * 0.3;
     cam.position.y += shake.y * 0.3;
   }
